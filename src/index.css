@@ -1,0 +1,59 @@
+html {
+  --app-bg: #121212;
+  --app-surface: #1e1e1e;
+  --app-surface-alt: #171a20;
+  --app-surface-soft: #111820;
+  --app-border: #333333;
+  --app-border-soft: #2f3946;
+  --app-text: #ffffff;
+  --app-muted-text: #aaaaaa;
+  --app-subtle-text: #9ca3af;
+  --app-accent: #4fc3f7;
+  --app-accent-soft: rgba(79, 195, 247, 0.1);
+  --app-danger: #ff6b6b;
+  --app-overlay: rgba(0, 0, 0, 0.7);
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  background: var(--app-bg);
+  color: var(--app-text);
+  font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+}
+
+#root {
+  height: 100%;
+}
+
+/* react-colorful theme customization */
+.react-colorful {
+  width: 100%;
+  max-width: 280px;
+}
+
+.react-colorful__saturation {
+  border-radius: 8px;
+  box-shadow: 0 0 0 1px var(--app-border-soft);
+}
+
+.react-colorful__hue {
+  border-radius: 8px;
+  box-shadow: 0 0 0 1px var(--app-border-soft);
+}
+
+.react-colorful__alpha {
+  border-radius: 8px;
+  box-shadow: 0 0 0 1px var(--app-border-soft);
+}
+
+.react-colorful__pointer {
+  border: 3px solid var(--app-accent);
+  box-shadow: 0 0 4px rgba(79, 195, 247, 0.5);
+}
+
+.react-colorful__saturation-pointer {
+  border: 3px solid var(--app-accent);
+  box-shadow: 0 0 4px rgba(79, 195, 247, 0.5);
+}
