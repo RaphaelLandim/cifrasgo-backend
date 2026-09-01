@@ -1,11 +1,22 @@
 import type { CSSProperties, DragEvent } from 'react';
 import { useEffect, useMemo, useState } from 'react';
 import { ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native-web';
-import { ArrowDown, ArrowUp, Copy, FolderPlus, GripHorizontal, Music, Palette, Plus, Search, Trash2 } from 'lucide-react';
+import { ArrowDown, ArrowUp, Copy, FileText, FolderPlus, GripHorizontal, Music, Palette, Plus, Search, Star, Trash2 } from 'lucide-react';
 import { AppModal } from '../components/AppModal';
 import { useManualNavigation } from '../contexts/ManualNavigationContext';
 import { db } from '../services/storage';
-import type { Playlist, PlaylistSection, PlaylistViewMode, Song } from '../types/models';
+import type { Playlist, PlaylistItem, PlaylistSection, PlaylistViewMode, QuickPdfLink, Song } from '../types/models';
+import {
+  deriveScriptPlaylistOrder,
+  getPlaylistItems,
+  getPlaylistSectionItemIds,
+  getPlaylistSectionItems,
+  makePdfPlaylistItem,
+  QUICK_PDF_LABELS,
+  syncPlaylistSectionItemIds,
+} from '../utils/playlistItems';
+import { hasQuickPdfSource } from '../utils/quickPdfs';
+import { useDevScreenPerformance } from '../utils/devPerformance';
 
 interface PlaylistStructureScreenProps {
   playlistId: string;
@@ -18,10 +29,12 @@ interface PlaylistStructureScreenProps {
 const uid = () => globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2, 11);
 
 type DragPayload =
-  | { kind: 'order-song'; songId: string }
-  | { kind: 'section-song'; sectionId: string; songId: string }
-  | { kind: 'unsectioned-song'; songId: string }
+  | { kind: 'order-item'; itemId: string }
+  | { kind: 'section-item'; sectionId: string; itemId: string }
+  | { kind: 'unsectioned-item'; itemId: string }
   | { kind: 'section'; sectionId: string };
+
+type ItemDragPayload = Exclude<DragPayload, { kind: 'section' }>;
 
 type SectionColorKey = 'blue' | 'green' | 'gold' | 'purple' | 'red' | 'gray';
 
@@ -92,6 +105,12 @@ const moveItem = <T,>(items: T[], fromIndex: number, toIndex: number): T[] => {
   return next;
 };
 
+const syncSectionWithItemIds = (
+  section: PlaylistSection,
+  itemIds: string[],
+  playlistItems: PlaylistItem[],
+): PlaylistSection => syncPlaylistSectionItemIds({ ...section, itemIds }, playlistItems, itemIds);
+
 export function PlaylistStructureScreen({
   playlistId,
   playlistName,
@@ -99,14 +118,17 @@ export function PlaylistStructureScreen({
   folderName,
   styles,
 }: PlaylistStructureScreenProps) {
+  useDevScreenPerformance('PlaylistStructure');
   const nav = useManualNavigation();
   const [playlist, setPlaylist] = useState<Playlist | null>(null);
   const [allSongs, setAllSongs] = useState<Song[]>([]);
+  const [quickPdfs, setQuickPdfs] = useState<QuickPdfLink[]>([]);
   const [draftViewMode, setDraftViewMode] = useState<PlaylistViewMode>('default');
-  const [draftOrderIds, setDraftOrderIds] = useState<string[]>([]);
+  const [draftItems, setDraftItems] = useState<PlaylistItem[]>([]);
   const [draftSections, setDraftSections] = useState<PlaylistSection[]>([]);
   const [newSectionTitle, setNewSectionTitle] = useState('');
   const [addSectionId, setAddSectionId] = useState<string | null>(null);
+  const [sectionItemSearch, setSectionItemSearch] = useState('');
   const [colorSectionId, setColorSectionId] = useState<string | null>(null);
   const [customSectionColor, setCustomSectionColor] = useState('');
   const [colorCopyFeedback, setColorCopyFeedback] = useState('');
@@ -116,18 +138,26 @@ export function PlaylistStructureScreen({
   const [dragOverTarget, setDragOverTarget] = useState<string | null>(null);
 
   const load = async () => {
-    const nextPlaylist = await db.byPlaylist(playlistId);
-    const nextSongs = await db.getSongs();
+    const [nextPlaylist, nextSongs, nextQuickPdfs] = await Promise.all([
+      db.byPlaylist(playlistId),
+      db.getSongs(),
+      db.getQuickPdfs(),
+    ]);
     if (!nextPlaylist) return;
-    const validIds = new Set(nextPlaylist.songIds);
-    const safeSections = (nextPlaylist.sections || []).map((section) => ({
-      ...section,
-      songIds: section.songIds.filter((songId) => validIds.has(songId)),
-    }));
+
+    const validSongIds = new Set(nextSongs.map((song) => song.id));
+    const safeItems = getPlaylistItems(nextPlaylist).filter((item) =>
+      item.type === 'pdf' || validSongIds.has(item.songId),
+    );
+    const safeSections = (nextPlaylist.sections || [])
+      .map((section) => syncPlaylistSectionItemIds(section, safeItems))
+      .filter((section) => section.title.trim() || section.itemIds?.length || section.songIds.length);
+
     setPlaylist(nextPlaylist);
     setAllSongs(nextSongs);
+    setQuickPdfs(nextQuickPdfs);
     setDraftViewMode(nextPlaylist.viewMode || 'default');
-    setDraftOrderIds(nextPlaylist.songIds);
+    setDraftItems(safeItems);
     setDraftSections(safeSections);
   };
 
@@ -138,18 +168,30 @@ export function PlaylistStructureScreen({
     const current = draftSections.find((section) => section.id === colorSectionId)?.color;
     setCustomSectionColor(current && normalizeHexColor(current) ? normalizeHexColor(current) || '' : '');
     setColorCopyFeedback('');
-  }, [colorSectionId]);
+  }, [colorSectionId, draftSections]);
 
   const songsById = useMemo(() => new Map(allSongs.map((song) => [song.id, song])), [allSongs]);
-  const orderedSongs = draftOrderIds.map((songId) => songsById.get(songId)).filter((song): song is Song => !!song);
-  const sectionSongIds = useMemo(
-    () => new Set(draftSections.flatMap((section) => section.songIds)),
-    [draftSections]
+  const quickPdfsById = useMemo(() => new Map(quickPdfs.map((pdf) => [pdf.id, pdf])), [quickPdfs]);
+  const draftSongIds = useMemo(
+    () => draftItems.filter((item) => item.type === 'song').map((item) => item.songId),
+    [draftItems],
   );
-  const unsectionedSongs = orderedSongs.filter((song) => !sectionSongIds.has(song.id));
+  const sectionItemIds = useMemo(
+    () => new Set(draftSections.flatMap((section) => getPlaylistSectionItemIds(section, draftItems))),
+    [draftItems, draftSections],
+  );
+  const unsectionedItems = useMemo(
+    () => draftItems.filter((item) => !sectionItemIds.has(item.id)),
+    [draftItems, sectionItemIds],
+  );
+  const draftSongIdSet = useMemo(() => new Set(draftSongIds), [draftSongIds]);
+  const draftPdfIdSet = useMemo(
+    () => new Set(draftItems.flatMap((item) => (item.type === 'pdf' ? [item.pdfId] : []))),
+    [draftItems],
+  );
   const addTargetSection = draftSections.find((section) => section.id === addSectionId) || null;
   const colorTargetSection = draftSections.find((section) => section.id === colorSectionId) || null;
-  const draftSongIdSet = useMemo(() => new Set(draftOrderIds), [draftOrderIds]);
+
   const addSongResults = useMemo(() => {
     const query = songSearch.trim().toLowerCase();
     return allSongs
@@ -167,6 +209,49 @@ export function PlaylistStructureScreen({
         return a.title.localeCompare(b.title, 'pt-BR');
       });
   }, [allSongs, draftSongIdSet, songSearch]);
+
+  const getQuickPdfTitle = (pdf?: QuickPdfLink | null, pdfId?: string) => {
+    if (!pdf && !pdfId) return 'PDF';
+    const label = pdfId && pdfId in QUICK_PDF_LABELS ? QUICK_PDF_LABELS[pdfId as keyof typeof QUICK_PDF_LABELS] : 'PDF';
+    return pdf?.name?.trim() ? `${label} - ${pdf.name.trim()}` : label;
+  };
+
+  const getQuickPdfSubtitle = (pdf?: QuickPdfLink | null) => {
+    if (pdf?.fileStorage || pdf?.fileData) return 'PDF salvo no app';
+    if (pdf?.url) return 'PDF por link';
+    return 'PDF rápido sem origem configurada';
+  };
+
+  const getItemTitle = (item: PlaylistItem) => {
+    if (item.type === 'pdf') return getQuickPdfTitle(quickPdfsById.get(item.pdfId), item.pdfId);
+    return songsById.get(item.songId)?.title || 'Música indisponível';
+  };
+
+  const getItemSubtitle = (item: PlaylistItem) => {
+    if (item.type === 'pdf') return getQuickPdfSubtitle(quickPdfsById.get(item.pdfId));
+    return songsById.get(item.songId)?.artist || 'Sem artista';
+  };
+
+  const sectionItemResults = useMemo(() => {
+    const query = sectionItemSearch.trim().toLowerCase();
+    const targetItemIds = new Set(addTargetSection ? getPlaylistSectionItemIds(addTargetSection, draftItems) : []);
+    const newPdfItems = quickPdfs
+      .filter((pdf) => hasQuickPdfSource(pdf) && !draftPdfIdSet.has(pdf.id))
+      .map((pdf) => makePdfPlaylistItem(pdf.id));
+    const candidates = [...draftItems, ...newPdfItems];
+
+    return candidates
+      .map((item) => ({
+        item,
+        title: getItemTitle(item),
+        subtitle: getItemSubtitle(item),
+        alreadyInTarget: targetItemIds.has(item.id),
+      }))
+      .filter((row) => {
+        if (!query) return true;
+        return row.title.toLowerCase().includes(query) || row.subtitle.toLowerCase().includes(query);
+      });
+  }, [addTargetSection, draftItems, draftPdfIdSet, quickPdfs, sectionItemSearch, songsById, quickPdfsById]);
 
   const startDrag = (event: DragEvent<HTMLDivElement>, payload: DragPayload) => {
     setDragPayload(payload);
@@ -191,45 +276,76 @@ export function PlaylistStructureScreen({
     setDragOverTarget(null);
   };
 
+  const getItemDragPayload = (payload: DragPayload | null): ItemDragPayload | null => {
+    if (!payload || payload.kind === 'section') return null;
+    return payload;
+  };
+
   const allowDrop = (event: DragEvent<HTMLDivElement>, target: string) => {
     event.preventDefault();
     event.dataTransfer.dropEffect = 'move';
     setDragOverTarget(target);
   };
 
-  const moveOrderSong = (songId: string, delta: number) => {
-    setDraftOrderIds((prev) => {
-      const index = prev.indexOf(songId);
-      const nextIndex = index + delta;
-      return moveItem(prev, index, nextIndex);
+  const moveDraftItem = (itemId: string, delta: number) => {
+    setDraftItems((prev) => {
+      const index = prev.findIndex((item) => item.id === itemId);
+      return moveItem(prev, index, index + delta);
     });
   };
 
-  const moveOrderSongToTarget = (songId: string, targetSongId: string) => {
-    if (songId === targetSongId) return;
-    setDraftOrderIds((prev) => moveItem(prev, prev.indexOf(songId), prev.indexOf(targetSongId)));
-  };
-
-  const removeSongFromList = (songId: string) => {
-    setDraftOrderIds((prev) => prev.filter((id) => id !== songId));
-    setDraftSections((prev) =>
-      prev.map((section) => ({ ...section, songIds: section.songIds.filter((id) => id !== songId) }))
+  const moveDraftItemToTarget = (itemId: string, targetItemId: string) => {
+    if (itemId === targetItemId) return;
+    setDraftItems((prev) =>
+      moveItem(
+        prev,
+        prev.findIndex((item) => item.id === itemId),
+        prev.findIndex((item) => item.id === targetItemId),
+      ),
     );
   };
 
+  const removeItemFromSections = (itemIdsToRemove: string[], nextItems: PlaylistItem[]) => {
+    setDraftSections((prev) =>
+      prev.map((section) => {
+        const nextItemIds = getPlaylistSectionItemIds(section, draftItems).filter((itemId) => !itemIdsToRemove.includes(itemId));
+        return syncSectionWithItemIds(section, nextItemIds, nextItems);
+      }),
+    );
+  };
+
+  const removeSongFromList = (songId: string) => {
+    const itemIdsToRemove = draftItems
+      .filter((item) => item.type === 'song' && item.songId === songId)
+      .map((item) => item.id);
+    const nextItems = draftItems.filter((item) => item.type !== 'song' || item.songId !== songId);
+    setDraftItems(nextItems);
+    removeItemFromSections(itemIdsToRemove, nextItems);
+  };
+
+  const removePdfFromList = (itemId: string) => {
+    const nextItems = draftItems.filter((item) => item.id !== itemId);
+    setDraftItems(nextItems);
+    removeItemFromSections([itemId], nextItems);
+  };
+
   const addSongToStructure = (songId: string) => {
-    setDraftOrderIds((prev) => (prev.includes(songId) ? prev : [...prev, songId]));
+    setDraftItems((prev) =>
+      prev.some((item) => item.type === 'song' && item.songId === songId)
+        ? prev
+        : [...prev, { id: `song:${songId}`, type: 'song', songId }],
+    );
   };
 
   const addSection = () => {
     const title = newSectionTitle.trim() || 'Nova seção';
-    setDraftSections((prev) => [...prev, { id: uid(), title, songIds: [] }]);
+    setDraftSections((prev) => [...prev, { id: uid(), title, songIds: [], itemIds: [] }]);
     setNewSectionTitle('');
   };
 
   const updateSectionTitle = (sectionId: string, title: string) => {
     setDraftSections((prev) =>
-      prev.map((section) => (section.id === sectionId ? { ...section, title } : section))
+      prev.map((section) => (section.id === sectionId ? { ...section, title } : section)),
     );
   };
 
@@ -237,18 +353,22 @@ export function PlaylistStructureScreen({
     setDraftSections((prev) => prev.filter((section) => section.id !== sectionId));
   };
 
-  const addSongToSection = (sectionId: string, songId: string) => {
+  const addItemToSection = (sectionId: string, item: PlaylistItem) => {
+    const itemExists = draftItems.some((draftItem) => draftItem.id === item.id);
+    const nextItems = itemExists ? draftItems : [...draftItems, item];
+    setDraftItems(nextItems);
     setDraftSections((prev) =>
       prev.map((section) => {
-        const withoutSong = section.songIds.filter((id) => id !== songId);
-        return section.id === sectionId ? { ...section, songIds: [...withoutSong, songId] } : { ...section, songIds: withoutSong };
-      })
+        const currentItemIds = getPlaylistSectionItemIds(section, nextItems).filter((itemId) => itemId !== item.id);
+        const nextItemIds = section.id === sectionId ? [...currentItemIds, item.id] : currentItemIds;
+        return syncSectionWithItemIds(section, nextItemIds, nextItems);
+      }),
     );
   };
 
   const updateSectionColor = (sectionId: string, color?: string) => {
     setDraftSections((prev) =>
-      prev.map((section) => (section.id === sectionId ? { ...section, color } : section))
+      prev.map((section) => (section.id === sectionId ? { ...section, color } : section)),
     );
     setColorSectionId(null);
   };
@@ -271,24 +391,24 @@ export function PlaylistStructureScreen({
     }
   };
 
-  const removeSongFromSection = (sectionId: string, songId: string) => {
-    setDraftSections((prev) =>
-      prev.map((section) =>
-        section.id === sectionId
-          ? { ...section, songIds: section.songIds.filter((id) => id !== songId) }
-          : section
-      )
-    );
-  };
-
-  const moveSectionSong = (sectionId: string, songId: string, delta: number) => {
+  const removeItemFromSection = (sectionId: string, itemId: string) => {
     setDraftSections((prev) =>
       prev.map((section) => {
         if (section.id !== sectionId) return section;
-        const index = section.songIds.indexOf(songId);
-        const nextIndex = index + delta;
-        return { ...section, songIds: moveItem(section.songIds, index, nextIndex) };
-      })
+        const nextItemIds = getPlaylistSectionItemIds(section, draftItems).filter((id) => id !== itemId);
+        return syncSectionWithItemIds(section, nextItemIds, draftItems);
+      }),
+    );
+  };
+
+  const moveSectionItem = (sectionId: string, itemId: string, delta: number) => {
+    setDraftSections((prev) =>
+      prev.map((section) => {
+        if (section.id !== sectionId) return section;
+        const itemIds = getPlaylistSectionItemIds(section, draftItems);
+        const index = itemIds.indexOf(itemId);
+        return syncSectionWithItemIds(section, moveItem(itemIds, index, index + delta), draftItems);
+      }),
     );
   };
 
@@ -298,87 +418,96 @@ export function PlaylistStructureScreen({
       moveItem(
         prev,
         prev.findIndex((section) => section.id === sectionId),
-        prev.findIndex((section) => section.id === targetSectionId)
-      )
+        prev.findIndex((section) => section.id === targetSectionId),
+      ),
     );
   };
 
-  const placeSongInSection = (sectionId: string, songId: string, targetSongId?: string) => {
+  const placeItemInSection = (sectionId: string, itemId: string, targetItemId?: string) => {
     setDraftSections((prev) =>
       prev.map((section) => {
-        const sourceIndex = section.songIds.indexOf(songId);
-        const targetIndex = targetSongId ? section.songIds.indexOf(targetSongId) : -1;
-        const cleanSongIds = section.songIds.filter((id) => id !== songId);
-        if (section.id !== sectionId) return { ...section, songIds: cleanSongIds };
+        const sourceItemIds = getPlaylistSectionItemIds(section, draftItems);
+        const cleanItemIds = sourceItemIds.filter((id) => id !== itemId);
+        if (section.id !== sectionId) return syncSectionWithItemIds(section, cleanItemIds, draftItems);
 
-        const insertIndex = targetSongId ? cleanSongIds.indexOf(targetSongId) : -1;
-        const adjustedInsertIndex = sourceIndex >= 0 && targetIndex >= 0 && sourceIndex < targetIndex
-          ? insertIndex + 1
-          : insertIndex;
-        const nextSongIds = [...cleanSongIds];
-        nextSongIds.splice(adjustedInsertIndex >= 0 ? adjustedInsertIndex : nextSongIds.length, 0, songId);
-        return { ...section, songIds: nextSongIds };
-      })
+        const insertIndex = targetItemId ? cleanItemIds.indexOf(targetItemId) : -1;
+        const nextItemIds = [...cleanItemIds];
+        nextItemIds.splice(insertIndex >= 0 ? insertIndex : nextItemIds.length, 0, itemId);
+        return syncSectionWithItemIds(section, nextItemIds, draftItems);
+      }),
     );
   };
 
-  const moveSongToUnsectioned = (songId: string) => {
+  const moveItemToUnsectioned = (itemId: string) => {
     setDraftSections((prev) =>
-      prev.map((section) => ({ ...section, songIds: section.songIds.filter((id) => id !== songId) }))
+      prev.map((section) => {
+        const nextItemIds = getPlaylistSectionItemIds(section, draftItems).filter((id) => id !== itemId);
+        return syncSectionWithItemIds(section, nextItemIds, draftItems);
+      }),
     );
   };
 
   const saveStructure = async () => {
     if (!playlist) return;
-    const validOrderIds = draftOrderIds.filter((songId) => songsById.has(songId));
-    const validIds = new Set(validOrderIds);
-    const nextSections = draftSections
-      .map((section) => ({
-        ...section,
-        title: section.title.trim() || 'Sem título',
-        songIds: section.songIds.filter((songId) => validIds.has(songId)),
-      }))
-      .filter((section) => section.title || section.songIds.length > 0);
+    const validItems = draftItems.filter((item) => item.type === 'pdf' || songsById.has(item.songId));
+    const shouldPersistItems = !!playlist.items || validItems.some((item) => item.type === 'pdf');
+    const sanitizedSections = draftSections
+      .map((section) => syncPlaylistSectionItemIds(section, validItems))
+      .map((section) => ({ ...section, title: section.title.trim() || 'Sem título' }))
+      .filter((section) => section.title || section.itemIds?.length || section.songIds.length);
+
+    const scriptOrder = deriveScriptPlaylistOrder(sanitizedSections, validItems);
+    const nextItems = draftViewMode === 'script' ? scriptOrder.items : validItems;
+    const nextSongIds = nextItems.flatMap((item) => (item.type === 'song' ? [item.songId] : []));
+    const nextSections = draftViewMode === 'script' ? scriptOrder.sections : sanitizedSections;
+
     const rows = await db.getPlaylists();
     await db.savePlaylists(
-      rows.map((item) =>
-        item.id === playlistId
-          ? {
-              ...item,
-              songIds: validOrderIds,
-              viewMode: draftViewMode,
-              sections: nextSections,
-            }
-          : item
-      )
+      rows.map((item) => {
+        if (item.id !== playlistId) return item;
+        return {
+          ...item,
+          songIds: nextSongIds,
+          ...(shouldPersistItems ? { items: nextItems } : { items: undefined }),
+          viewMode: draftViewMode,
+          sections: nextSections,
+        };
+      }),
     );
     nav.navigate('PlaylistDetail', { playlistId, playlistName: playlist.name, folderId, folderName });
   };
 
-  const renderOrderRow = (song: Song, index: number) => {
+  const renderItemIcon = (item: PlaylistItem) => (
+    <View style={item.type === 'pdf' ? localStyles.pdfIconTile : localStyles.musicIconTile}>
+      {item.type === 'pdf' ? <FileText size={17} color="#ffd166" /> : <Music size={17} color="#38bdf8" />}
+    </View>
+  );
+
+  const renderOrderRow = (item: PlaylistItem, index: number) => {
     const isFirst = index === 0;
-    const isLast = index === orderedSongs.length - 1;
-    const targetId = `order-${song.id}`;
-    const isDragging = dragPayload?.kind !== 'section' && dragPayload?.songId === song.id;
+    const isLast = index === draftItems.length - 1;
+    const targetId = `order-${item.id}`;
+    const isDragging = dragPayload?.kind === 'order-item' && dragPayload.itemId === item.id;
     const isDropTarget = dragOverTarget === targetId;
+    const highlighted = item.type === 'song' && item.isHighlighted === true;
+
     return (
       <div
-        key={song.id}
+        key={item.id}
         draggable
         style={{
           ...(localStyles.songRow as CSSProperties),
           ...(isDragging ? (localStyles.dragging as CSSProperties) : {}),
           ...(isDropTarget ? (localStyles.dropTarget as CSSProperties) : {}),
+          ...(highlighted ? (localStyles.highlightedSongRow as CSSProperties) : {}),
         }}
-        onDragStart={(event) => startDrag(event, { kind: 'order-song', songId: song.id })}
+        onDragStart={(event) => startDrag(event, { kind: 'order-item', itemId: item.id })}
         onDragOver={(event) => allowDrop(event, targetId)}
         onDragLeave={() => setDragOverTarget(null)}
         onDrop={(event) => {
           event.preventDefault();
           const payload = getDropPayload(event);
-          if (payload && payload.kind !== 'section') {
-            moveOrderSongToTarget(payload.songId, song.id);
-          }
+          if (payload?.kind === 'order-item') moveDraftItemToTarget(payload.itemId, item.id);
           resetDrag();
         }}
         onDragEnd={resetDrag}
@@ -386,20 +515,26 @@ export function PlaylistStructureScreen({
         <Text style={localStyles.orderNumber}>{index + 1}</Text>
         <View style={localStyles.songLeft}>
           <GripHorizontal size={17} color="#4FC3F7" />
-          <Music size={16} color="#4FC3F7" />
+          {renderItemIcon(item)}
           <View style={localStyles.songInfo}>
-            <Text style={styles.title} numberOfLines={1}>{song.title}</Text>
-            <Text style={styles.subtitle} numberOfLines={1}>{song.artist || 'Sem artista'}</Text>
+            <View style={localStyles.songTitleRow}>
+              <Text style={styles.title} numberOfLines={1}>{getItemTitle(item)}</Text>
+              {highlighted ? <Star size={14} color="#ffd166" fill="#ffd166" /> : null}
+            </View>
+            <Text style={styles.subtitle} numberOfLines={1}>{getItemSubtitle(item)}</Text>
           </View>
         </View>
         <View style={localStyles.songControls}>
-          <TouchableOpacity disabled={isFirst} style={localStyles.iconButton} onPress={() => moveOrderSong(song.id, -1)}>
+          <TouchableOpacity disabled={isFirst} style={localStyles.iconButton} onPress={() => moveDraftItem(item.id, -1)}>
             <ArrowUp size={15} color={isFirst ? '#4b5563' : '#4FC3F7'} />
           </TouchableOpacity>
-          <TouchableOpacity disabled={isLast} style={localStyles.iconButton} onPress={() => moveOrderSong(song.id, 1)}>
+          <TouchableOpacity disabled={isLast} style={localStyles.iconButton} onPress={() => moveDraftItem(item.id, 1)}>
             <ArrowDown size={15} color={isLast ? '#4b5563' : '#4FC3F7'} />
           </TouchableOpacity>
-          <TouchableOpacity style={localStyles.iconButton} onPress={() => removeSongFromList(song.id)}>
+          <TouchableOpacity
+            style={localStyles.iconButton}
+            onPress={() => (item.type === 'pdf' ? removePdfFromList(item.id) : removeSongFromList(item.songId))}
+          >
             <Trash2 size={15} color="#ff7a7a" />
           </TouchableOpacity>
         </View>
@@ -407,49 +542,54 @@ export function PlaylistStructureScreen({
     );
   };
 
-  const renderSectionSongRow = (section: PlaylistSection, song: Song, index: number, total: number) => {
-    const targetId = `section-song-${section.id}-${song.id}`;
-    const isDragging = dragPayload?.kind !== 'section' && dragPayload?.songId === song.id;
+  const renderSectionItemRow = (section: PlaylistSection, item: PlaylistItem, index: number, total: number) => {
+    const targetId = `section-item-${section.id}-${item.id}`;
+    const itemPayload = getItemDragPayload(dragPayload);
+    const isDragging = itemPayload?.itemId === item.id;
     const isDropTarget = dragOverTarget === targetId;
+    const highlighted = item.type === 'song' && item.isHighlighted === true;
+
     return (
       <div
-        key={song.id}
+        key={item.id}
         draggable
         style={{
           ...(localStyles.songRow as CSSProperties),
           ...(isDragging ? (localStyles.dragging as CSSProperties) : {}),
           ...(isDropTarget ? (localStyles.dropTarget as CSSProperties) : {}),
+          ...(highlighted ? (localStyles.highlightedSongRow as CSSProperties) : {}),
         }}
-        onDragStart={(event) => startDrag(event, { kind: 'section-song', sectionId: section.id, songId: song.id })}
+        onDragStart={(event) => startDrag(event, { kind: 'section-item', sectionId: section.id, itemId: item.id })}
         onDragOver={(event) => allowDrop(event, targetId)}
         onDragLeave={() => setDragOverTarget(null)}
         onDrop={(event) => {
           event.preventDefault();
           event.stopPropagation();
-          const payload = getDropPayload(event);
-          if (payload && payload.kind !== 'section' && payload.songId !== song.id) {
-            placeSongInSection(section.id, payload.songId, song.id);
-          }
+          const payload = getItemDragPayload(getDropPayload(event));
+          if (payload && payload.itemId !== item.id) placeItemInSection(section.id, payload.itemId, item.id);
           resetDrag();
         }}
         onDragEnd={resetDrag}
       >
         <View style={localStyles.songLeft}>
           <GripHorizontal size={17} color="#4FC3F7" />
-          <Music size={16} color="#4FC3F7" />
+          {renderItemIcon(item)}
           <View style={localStyles.songInfo}>
-            <Text style={styles.title} numberOfLines={1}>{song.title}</Text>
-            <Text style={styles.subtitle} numberOfLines={1}>{song.artist || 'Sem artista'}</Text>
+            <View style={localStyles.songTitleRow}>
+              <Text style={styles.title} numberOfLines={1}>{getItemTitle(item)}</Text>
+              {highlighted ? <Star size={14} color="#ffd166" fill="#ffd166" /> : null}
+            </View>
+            <Text style={styles.subtitle} numberOfLines={1}>{getItemSubtitle(item)}</Text>
           </View>
         </View>
         <View style={localStyles.songControls}>
-          <TouchableOpacity disabled={index === 0} style={localStyles.iconButton} onPress={() => moveSectionSong(section.id, song.id, -1)}>
+          <TouchableOpacity disabled={index === 0} style={localStyles.iconButton} onPress={() => moveSectionItem(section.id, item.id, -1)}>
             <ArrowUp size={15} color={index === 0 ? '#4b5563' : '#4FC3F7'} />
           </TouchableOpacity>
-          <TouchableOpacity disabled={index === total - 1} style={localStyles.iconButton} onPress={() => moveSectionSong(section.id, song.id, 1)}>
+          <TouchableOpacity disabled={index === total - 1} style={localStyles.iconButton} onPress={() => moveSectionItem(section.id, item.id, 1)}>
             <ArrowDown size={15} color={index === total - 1 ? '#4b5563' : '#4FC3F7'} />
           </TouchableOpacity>
-          <TouchableOpacity style={localStyles.iconButton} onPress={() => removeSongFromSection(section.id, song.id)}>
+          <TouchableOpacity style={localStyles.iconButton} onPress={() => removeItemFromSection(section.id, item.id)}>
             <Trash2 size={15} color="#ff7a7a" />
           </TouchableOpacity>
         </View>
@@ -457,39 +597,44 @@ export function PlaylistStructureScreen({
     );
   };
 
-  const renderUnsectionedSongRow = (song: Song) => {
-    const targetId = `unsectioned-song-${song.id}`;
-    const isDragging = dragPayload?.kind !== 'section' && dragPayload?.songId === song.id;
+  const renderUnsectionedItemRow = (item: PlaylistItem) => {
+    const targetId = `unsectioned-item-${item.id}`;
+    const itemPayload = getItemDragPayload(dragPayload);
+    const isDragging = itemPayload?.itemId === item.id;
     const isDropTarget = dragOverTarget === targetId;
+    const highlighted = item.type === 'song' && item.isHighlighted === true;
+
     return (
       <div
-        key={song.id}
+        key={item.id}
         draggable
         style={{
           ...(localStyles.songRow as CSSProperties),
           ...(isDragging ? (localStyles.dragging as CSSProperties) : {}),
           ...(isDropTarget ? (localStyles.dropTarget as CSSProperties) : {}),
+          ...(highlighted ? (localStyles.highlightedSongRow as CSSProperties) : {}),
         }}
-        onDragStart={(event) => startDrag(event, { kind: 'unsectioned-song', songId: song.id })}
+        onDragStart={(event) => startDrag(event, { kind: 'unsectioned-item', itemId: item.id })}
         onDragOver={(event) => allowDrop(event, targetId)}
         onDragLeave={() => setDragOverTarget(null)}
         onDrop={(event) => {
           event.preventDefault();
           event.stopPropagation();
-          const payload = getDropPayload(event);
-          if (payload && payload.kind !== 'section') {
-            moveSongToUnsectioned(payload.songId);
-          }
+          const payload = getItemDragPayload(getDropPayload(event));
+          if (payload) moveItemToUnsectioned(payload.itemId);
           resetDrag();
         }}
         onDragEnd={resetDrag}
       >
         <View style={localStyles.songLeft}>
           <GripHorizontal size={17} color="#4FC3F7" />
-          <Music size={16} color="#4FC3F7" />
+          {renderItemIcon(item)}
           <View style={localStyles.songInfo}>
-            <Text style={styles.title} numberOfLines={1}>{song.title}</Text>
-            <Text style={styles.subtitle} numberOfLines={1}>{song.artist || 'Sem artista'}</Text>
+            <View style={localStyles.songTitleRow}>
+              <Text style={styles.title} numberOfLines={1}>{getItemTitle(item)}</Text>
+              {highlighted ? <Star size={14} color="#ffd166" fill="#ffd166" /> : null}
+            </View>
+            <Text style={styles.subtitle} numberOfLines={1}>{getItemSubtitle(item)}</Text>
           </View>
         </View>
       </div>
@@ -539,10 +684,10 @@ export function PlaylistStructureScreen({
           <View style={styles.settingsControlBlock}>
             <Text style={styles.settingsModalSubhead}>Modo padrão</Text>
             <Text style={styles.settingsControlHint}>
-              Mantém a lista simples. Use as setas para ordenar ou remova músicas da lista.
+              Mantém a lista simples. Use as setas para ordenar ou remova itens da lista.
             </Text>
             <View style={localStyles.listBlock}>
-              {orderedSongs.length ? orderedSongs.map(renderOrderRow) : (
+              {draftItems.length ? draftItems.map(renderOrderRow) : (
                 <Text style={styles.settingsEmptyText}>Adicione músicas à lista antes de organizar.</Text>
               )}
             </View>
@@ -552,7 +697,7 @@ export function PlaylistStructureScreen({
             <View style={styles.settingsControlBlock}>
               <Text style={styles.settingsModalSubhead}>Modo roteiro</Text>
               <Text style={styles.settingsControlHint}>
-                Crie títulos de roteiro e associe músicas a cada seção.
+                Crie títulos de roteiro e associe músicas ou PDFs rápidos a cada seção.
               </Text>
               <View style={localStyles.addSectionRow}>
                 <TextInput
@@ -571,9 +716,7 @@ export function PlaylistStructureScreen({
 
             {draftSections.length ? (
               draftSections.map((section) => {
-                const sectionSongs = section.songIds
-                  .map((songId) => songsById.get(songId))
-                  .filter((song): song is Song => !!song);
+                const sectionItems = getPlaylistSectionItems(section, draftItems);
                 const targetId = `section-${section.id}`;
                 const sectionColor = getSectionColor(section.color);
                 const sectionBackground = getSectionSoftBackground(section.color);
@@ -598,8 +741,9 @@ export function PlaylistStructureScreen({
                       const payload = getDropPayload(event);
                       if (payload?.kind === 'section') {
                         moveSectionToTarget(payload.sectionId, section.id);
-                      } else if (payload) {
-                        placeSongInSection(section.id, payload.songId);
+                      } else {
+                        const itemPayload = getItemDragPayload(payload);
+                        if (itemPayload) placeItemInSection(section.id, itemPayload.itemId);
                       }
                       resetDrag();
                     }}
@@ -637,14 +781,20 @@ export function PlaylistStructureScreen({
                         <Trash2 size={16} color="#ff7a7a" />
                       </TouchableOpacity>
                     </View>
-                    {sectionSongs.length ? (
-                      sectionSongs.map((song, index) => renderSectionSongRow(section, song, index, sectionSongs.length))
+                    {sectionItems.length ? (
+                      sectionItems.map((item, index) => renderSectionItemRow(section, item, index, sectionItems.length))
                     ) : (
-                      <Text style={styles.settingsEmptyText}>Nenhuma música nesta seção.</Text>
+                      <Text style={styles.settingsEmptyText}>Nenhum item nesta seção.</Text>
                     )}
-                    <TouchableOpacity style={localStyles.secondaryButton} onPress={() => setAddSectionId(section.id)}>
+                    <TouchableOpacity
+                      style={localStyles.secondaryButton}
+                      onPress={() => {
+                        setSectionItemSearch('');
+                        setAddSectionId(section.id);
+                      }}
+                    >
                       <Plus size={16} color="#4FC3F7" />
-                      <Text style={localStyles.secondaryButtonText}>Adicionar música à seção</Text>
+                      <Text style={localStyles.secondaryButtonText}>Adicionar item à seção</Text>
                     </TouchableOpacity>
                   </div>
                 );
@@ -657,7 +807,7 @@ export function PlaylistStructureScreen({
               </View>
             )}
 
-            {unsectionedSongs.length ? (
+            {unsectionedItems.length ? (
               <div
                 style={{
                   ...(styles.settingsControlBlock as CSSProperties),
@@ -667,15 +817,13 @@ export function PlaylistStructureScreen({
                 onDragLeave={() => setDragOverTarget(null)}
                 onDrop={(event) => {
                   event.preventDefault();
-                  const payload = getDropPayload(event);
-                  if (payload && payload.kind !== 'section') {
-                    moveSongToUnsectioned(payload.songId);
-                  }
+                  const payload = getItemDragPayload(getDropPayload(event));
+                  if (payload) moveItemToUnsectioned(payload.itemId);
                   resetDrag();
                 }}
               >
                 <Text style={styles.settingsModalSubhead}>Sem seção</Text>
-                {unsectionedSongs.map(renderUnsectionedSongRow)}
+                {unsectionedItems.map(renderUnsectionedItemRow)}
               </div>
             ) : null}
           </>
@@ -712,7 +860,7 @@ export function PlaylistStructureScreen({
             style={localStyles.searchInput}
             value={songSearch}
             onChangeText={setSongSearch}
-            placeholder="Buscar por tí­tulo ou artista..."
+            placeholder="Buscar por título ou artista..."
             placeholderTextColor="var(--app-subtle-text)"
             autoFocus
           />
@@ -733,7 +881,7 @@ export function PlaylistStructureScreen({
                     <Text style={styles.settingsControlHint} numberOfLines={1}>{song.artist || 'Sem artista'}</Text>
                   </View>
                   {alreadyAdded ? (
-                    <Text style={localStyles.alreadyAddedText}>JÃ¡ adicionada</Text>
+                    <Text style={localStyles.alreadyAddedText}>Já adicionada</Text>
                   ) : (
                     <Plus size={18} color="#4FC3F7" />
                   )}
@@ -748,43 +896,56 @@ export function PlaylistStructureScreen({
 
       <AppModal
         visible={!!addSectionId}
-        title={addTargetSection ? `Adicionar em ${addTargetSection.title || 'seção'}` : 'Adicionar música'}
+        title={addTargetSection ? `Adicionar em ${addTargetSection.title || 'seção'}` : 'Adicionar item'}
         onClose={() => setAddSectionId(null)}
         icon={<FolderPlus size={16} color="var(--app-accent)" />}
         maxWidth={520}
       >
+        <View style={localStyles.searchBox}>
+          <Search size={18} color="var(--app-muted-text)" />
+          <TextInput
+            style={localStyles.searchInput}
+            value={sectionItemSearch}
+            onChangeText={setSectionItemSearch}
+            placeholder="Buscar música ou PDF..."
+            placeholderTextColor="var(--app-subtle-text)"
+            autoFocus
+          />
+        </View>
         <ScrollView style={{ maxHeight: 360 }}>
-          {orderedSongs.length ? (
-            orderedSongs.map((song) => {
-              const alreadyInTarget = addTargetSection?.songIds.includes(song.id);
-              return (
-                <TouchableOpacity
-                  key={song.id}
-                  style={[styles.settingsInlineAction, alreadyInTarget && localStyles.disabledRow]}
-                  disabled={alreadyInTarget}
-                  onPress={() => {
-                    if (!addSectionId) return;
-                    addSongToSection(addSectionId, song.id);
-                    setAddSectionId(null);
-                  }}
-                >
-                  <View>
-                    <Text style={styles.settingsControlTitle}>{song.title}</Text>
-                    <Text style={styles.settingsControlHint}>{song.artist || 'Sem artista'}</Text>
-                  </View>
-                  <Plus size={18} color={alreadyInTarget ? '#4b5563' : '#4FC3F7'} />
-                </TouchableOpacity>
-              );
-            })
+          {sectionItemResults.length ? (
+            sectionItemResults.map((row) => (
+              <TouchableOpacity
+                key={row.item.id}
+                style={[styles.settingsInlineAction, row.alreadyInTarget && localStyles.disabledRow]}
+                disabled={row.alreadyInTarget}
+                onPress={() => {
+                  if (!addSectionId) return;
+                  addItemToSection(addSectionId, row.item);
+                  setAddSectionId(null);
+                }}
+              >
+                <View style={localStyles.addItemRowIconWrap}>{renderItemIcon(row.item)}</View>
+                <View style={localStyles.addSongInfo}>
+                  <Text style={styles.settingsControlTitle} numberOfLines={1}>{row.title}</Text>
+                  <Text style={styles.settingsControlHint} numberOfLines={1}>{row.subtitle}</Text>
+                </View>
+                {row.alreadyInTarget ? (
+                  <Text style={localStyles.alreadyAddedText}>Na seção</Text>
+                ) : (
+                  <Plus size={18} color="#4FC3F7" />
+                )}
+              </TouchableOpacity>
+            ))
           ) : (
-            <Text style={styles.settingsEmptyText}>Adicione músicas à lista antes de montar o roteiro.</Text>
+            <Text style={styles.settingsEmptyText}>Nenhum item disponível para adicionar.</Text>
           )}
         </ScrollView>
       </AppModal>
 
       <AppModal
         visible={!!colorSectionId}
-        title={colorTargetSection ? `Cor de ${colorTargetSection.title || 'seÃ§Ã£o'}` : 'Cor da seÃ§Ã£o'}
+        title={colorTargetSection ? `Cor de ${colorTargetSection.title || 'seção'}` : 'Cor da seção'}
         onClose={() => setColorSectionId(null)}
         icon={<Palette size={16} color="var(--app-accent)" />}
         maxWidth={460}
@@ -976,6 +1137,10 @@ const localStyles = StyleSheet.create({
     borderColor: 'var(--app-accent)',
     backgroundColor: 'var(--app-accent-soft)',
   },
+  highlightedSongRow: {
+    borderColor: 'rgba(255, 209, 102, 0.46)',
+    backgroundColor: 'rgba(255, 209, 102, 0.08)',
+  },
   orderNumber: {
     width: 26,
     color: 'var(--app-subtle-text)',
@@ -985,6 +1150,34 @@ const localStyles = StyleSheet.create({
   songInfo: {
     flex: 1,
     minWidth: 0,
+  },
+  songTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    minWidth: 0,
+  },
+  musicIconTile: {
+    width: 34,
+    height: 34,
+    borderRadius: 5,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(14, 165, 233, 0.10)',
+    borderColor: 'rgba(56, 189, 248, 0.22)',
+    borderWidth: 1,
+    flexShrink: 0,
+  },
+  pdfIconTile: {
+    width: 34,
+    height: 34,
+    borderRadius: 5,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255, 209, 102, 0.12)',
+    borderColor: 'rgba(255, 209, 102, 0.28)',
+    borderWidth: 1,
+    flexShrink: 0,
   },
   iconButton: {
     width: 34,
@@ -1250,6 +1443,9 @@ const localStyles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
+  },
+  addItemRowIconWrap: {
+    flexShrink: 0,
   },
   addSongInfo: {
     flex: 1,

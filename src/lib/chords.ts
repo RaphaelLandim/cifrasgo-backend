@@ -140,9 +140,16 @@ export const isMusicalAnnotationToken = (token: string): boolean => {
   return false;
 };
 
+const CHORD_SUFFIX_PART =
+  '(?:(?:maj|min|dim|aug|sus|add|m|M|[0-9Â°Âº()+\\-#b]|\\/(?:4|6|7|9|11|13))+)*';
+
+const CHORD_TOKEN_PARTS_REGEX = new RegExp(
+  `^([A-G](?:#|b)?)(${CHORD_SUFFIX_PART})(?:\\/([A-G](?:#|b)?))?$`
+);
+
 const parseChordTokenParts = (token: string) => {
   const cleaned = cleanChordToken(token);
-  const match = cleaned.match(/^([A-G](?:#|b)?)((?:(?:maj|min|dim|aug|sus|add|m|M|[0-9Â°Âº()+\-#b]+))*)(?:\/([A-G](?:#|b)?))?$/);
+  const match = cleaned.match(CHORD_TOKEN_PARTS_REGEX);
   if (!match || !VALID_SUFFIX.test(match[2] ?? '')) return null;
   return {
     text: cleaned,

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { FlatList, Text, TouchableOpacity, View } from 'react-native-web';
-import { ChevronRight } from 'lucide-react';
+import { FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native-web';
+import { ChevronRight, Music } from 'lucide-react';
 import { useGenreFilter } from '../contexts/GenreFilterContext';
 import { useManualNavigation } from '../contexts/ManualNavigationContext';
 import { SongActionsModal } from '../components/SongActionsModal';
@@ -55,8 +55,15 @@ export function ArtistDetailScreen({
               style={styles.cardMainPress}
               onPress={() => nav.navigate('SongDetail', { id: item.id, returnTo: songReturnTo })}
             >
-              <Text style={[styles.title, styles.listTitle]} numberOfLines={1}>{item.title}</Text>
-              <SongMetaLine song={item} styles={styles} />
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 1}}>
+                <View style={localStyles.listIconTile}>
+                  <Music size={19} color="#38bdf8" />
+                </View>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={[styles.title, styles.listTitle]} numberOfLines={1}>{item.title}</Text>
+                  <SongMetaLine song={item} styles={styles} />
+                </View>
+              </View>
             </TouchableOpacity>
             <TouchableOpacity style={styles.listActionBtn} onPress={() => setSelectedActionSong(item)}>
               <ChevronRight size={18} color="#4FC3F7" />
@@ -75,3 +82,18 @@ export function ArtistDetailScreen({
     </View>
   );
 }
+
+const localStyles = StyleSheet.create({
+  listIconTile: {
+    width: 34,
+    height: 34,
+    borderRadius: 5,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(14, 165, 233, 0.10)',
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.22)',
+    boxShadow: '0 10px 20px rgba(14, 165, 233, 0.10)',
+    flexShrink: 0,
+  },
+});

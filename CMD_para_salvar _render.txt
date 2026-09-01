@@ -1,0 +1,113 @@
+CIFRASGO — COMANDOS IMPORTANTES
+
+========================================
+
+1. BACKEND — ENVIAR ALTERAÇÕES PARA O RENDER
+   ========================================
+
+Entrar na pasta do projeto:
+
+cd /d C:\Projetos_Prog\Cifras_Vite
+
+Verificar alterações:
+
+git status
+
+Adicionar arquivos alterados:
+
+git add .
+
+Criar commit:
+
+git commit -m "descrição da alteração"
+
+Enviar para GitHub:
+
+git push
+
+OBS:
+O Render faz deploy automático após o push.
+
+========================================
+2. TESTAR BACKEND ONLINE
+========================
+
+URL:
+
+https://cifrasgo-backend.onrender.com/api/scrape?url=https%3A%2F%2Fwww.cifraclub.com.br%2Ffelipe-rodrigues%2Ftudo-e-perda%2F
+
+Se retornar:
+
+* title
+* artist
+* content
+
+backend está OK.
+
+========================================
+3. GERAR APK NOVO
+=================
+
+Rodar o BAT:
+
+Gerar_Apk.bat
+
+OU MANUAL:
+
+cd /d C:\Projetos_Prog\Cifras_Vite
+
+npm run build
+
+npx cap copy android
+npx cap sync android
+
+cd android
+
+gradlew.bat clean assembleDebug
+
+========================================
+4. APK FINAL
+============
+
+Saída:
+
+C:\Projetos_Prog\Cifras_Vite\CifrasGo.apk
+
+========================================
+5. ARQUIVO IMPORTANTE
+=====================
+
+Arquivo:
+
+.env.production
+
+Conteúdo:
+
+VITE_API_BASE_URL=https://cifrasgo-backend.onrender.com
+
+========================================
+6. UPTIMEROBOT
+==============
+
+Monitorando:
+
+https://cifrasgo-backend.onrender.com/api/scrape?url=https%3A%2F%2Fwww.cifraclub.com.br%2Ffelipe-rodrigues%2Ftudo-e-perda%2F
+
+Intervalo:
+5 minutos
+
+========================================
+7. FLUXO COMPLETO
+=================
+
+Codex
+↓
+Git
+↓
+GitHub
+↓
+Render
+↓
+APK
+↓
+Celular

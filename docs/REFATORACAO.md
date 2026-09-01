@@ -1,6 +1,6 @@
 # Guia de Refatoracao - CifrasGo
 
-Atualizado em: 2026-05-17
+Atualizado em: 2026-05-31
 
 ## Objetivo
 
@@ -16,17 +16,33 @@ Manter o app facil de evoluir separando responsabilidades:
 
 Nota importante: o app ativo voltou a usar o `src/App.tsx` completo, porque a primeira separacao de telas simplificou a interface e deixou muita coisa fora. A regra daqui para frente e refatorar por extracao fiel: copiar a tela original para um arquivo proprio, mover dependencias para services/utils, validar build e so entao ligar a rota.
 
-Estado validado em 2026-05-15: a refatoracao incremental abaixo esta ativa no `App.tsx` original, `npm run build`, `npx cap sync android` e `assembleDebug` passaram. O app esta em estado de producao beta: fluxo principal estabilizado, backup/restauracao completo em modo mesclar, reset local disponivel, HomeDashboard opcional, modo apresentacao preservado, metronomo em primeira fatia e auto-rolagem retomada via `window`. A importacao no APK Android depende de backend acessivel via `VITE_API_BASE_URL`; ver `docs/DEPLOY_BACKEND_ANDROID.md`.
+Estado validado em 2026-05-20: a refatoracao incremental abaixo esta ativa no `App.tsx` original e o app esta em producao beta funcional. Fluxo principal, backup/restauracao, pastas/listas profundas, Modo Play, auto-scroll por `window`, importacao online e Android/WebView estao em estado operacional. O backend de importacao esta online no Render, com deploy via GitHub e monitoramento por UptimeRobot; o APK Android usa `VITE_API_BASE_URL`; ver `docs/DEPLOY_BACKEND_ANDROID.md`.
+
+Atualizacao 2026-05-20:
+
+- `SongDetailScreen` tem Modo Play refinado, lista atual em `AppModal`, auto-scroll V1-V8/personalizado e intervencao manual sincronizada.
+- `FoldersScreen`, `FolderDetailScreen` e `PlaylistDetailScreen` cobrem localizacao de itens profundos, mover/adicionar existentes e selecao multipla.
+- `SongDetailScreen` permite adicionar a musica atual diretamente a uma lista existente sem duplicacao.
+- Backend Render esta documentado como fluxo atual; manter `.env.production` fora do Git.
+
+Atualizacao 2026-05-21:
+
+- A refatoracao incremental da `SongDetailScreen` comecou seguindo `docs/SONG_DETAIL_REFACTOR_PLAN.md`.
+- Primeiras fatias concluidas: `MetronomeIndicators`, `RecordingMiniPlayer`, `SongBottomToolbar`, `PlayModeHeader`, `CurrentPlaylistModal`, `QuickControlsModal`, `HelpModeOverlay`, `PerformanceNote`, `SongNormalHeader`, `YoutubeOptionsModal`, `SongLyricsBlock`, `SongObservationBlock` e `TomSelectorModal`, todos em `src/screens/SongDetail/components/`.
+- A logica principal desses recursos permanece na `SongDetailScreen`; as extracoes atuais sao visuais e recebem estado/handlers por props explicitas.
+- Micro-refatoracao de playlists concluida nos fluxos principais de musica: `PlaylistPickerModal` virou o componente padrao para selecao/envio/adicao/remocao de playlists em `SongDetailScreen`, `SongActionsModal`, `PlaylistDetailScreen` e `FolderDetailScreen`.
 
 ## Extracoes ja ativas
 
-- `src/services/storage.ts`: `AsyncStorage`, `STORAGE_KEYS` e `db` completo para musicas, generos, filtros, tema, pastas, playlists e vinculos `@folder_songs`.
+- `src/services/storage.ts`: `AsyncStorage`, `STORAGE_KEYS` e `db` completo para musicas, generos, filtros, tema, pastas, playlists, PDFs rapidos por link e vinculos `@folder_songs`.
 - `src/services/scraper.ts`: chamada para `/api/scrape` usada pela tela de importacao, validacao de JSON/content-type e erro claro quando o APK Android nao tem backend configurado.
 - `src/services/backup.ts`: leitura de `.zip`/`.cfs`, deduplicacao, restauracao e exportacao de backup completo CifrasGo.
 - `src/services/share.ts`: nomes de arquivo, TXT da musica, ZIP de playlist e compartilhamento/download, incluindo compartilhamento nativo Android via Capacitor.
+- `src/services/playlistPdfExport.ts`: exportacao textual sob demanda de playlist para PDF, com acordes ou em Modo Vocalista, usando `jsPDF` carregado dinamicamente e compartilhamento via `shareBlobFile`.
 - `src/services/songTextFormat.ts`: formato TXT proprio de musica (`CIFRASGO_SONG_V1`), builder e parser puro.
 - `src/services/linking.ts`: URL inicial/deep link do Capacitor, extracao de URL importavel, suporte ao evento nativo Android de share e deduplicacao de eventos repetidos.
 - `src/utils/genres.ts`: normalizacao, exibicao e filtros de genero, incluindo pastas/listas.
+- `src/utils/folderPlaylistDisplay.ts`: helper central para ordenar pastas/listas por modo global (`folders_first`, `playlists_first`, `mixed`) compondo com `sortStarredItems`.
 - `src/utils/chordKeys.ts`: tons, deteccao de tom e calculo de transposicao.
 - `src/utils/chordKeys.ts`: tambem expoe opcoes de tom por preferencia de grafia (`sharp`, `flat`, `mixed`), mantendo calculo interno por semitom.
 - `src/utils/links.ts`: extracao de URL recebida por texto/deep link.
@@ -34,16 +50,22 @@ Estado validado em 2026-05-15: a refatoracao incremental abaixo esta ativa no `A
 - `src/components/AppHeader.tsx`: cabecalho/top bar extraido, incluindo drawer, voltar, busca, adicionar e acoes do editor.
 - `src/components/AppDrawer.tsx`: menu lateral extraido, com logo, estatisticas e rotas principais.
 - `src/components/AppModal.tsx`: modal base reutilizavel com header em `--app-header`, titulo, icone opcional, botao X, corpo e rodape opcional.
-- `src/components/ChordLine.tsx`: renderizacao de acordes/letra.
+- `src/components/ChordLine.tsx`: renderizacao de acordes/letra; preview experimental de acordes pausado, sem clique/toque nos acordes e sem modal acoplado ao render.
+- `src/utils/vocalMode.ts`: helper puro do Modo Vocalista, usado pela leitura da cifra e pela exportacao PDF para ocultar acordes sem alterar o texto salvo.
+- `src/components/modals/ChordPreviewModal.tsx`: modal experimental para shapes cadastrados, com `AppModal`, nome do acorde e diagrama visual leve; mantido no codigo, mas sem uso enquanto a interacao estiver pausada.
+- `src/components/chords/ChordDiagram.tsx`: renderer visual experimental sem SVG/canvas; separa `frets` (casas/trastes) de `fingers` (dedos da mao), desenha cordas/trastes com `View`/`Text` e suporta pestana basica; mantido como experimento inativo.
+- `src/lib/chordShapes.ts`: registry experimental com shapes basicos maiores, menores, 7 e m7 naturais/acidentes comuns; limita lookup a acordes exatos do catalogo e mantem `frets`, `fingers`, `baseFret` e `barres` separados.
 - `src/components/SongMetaLine.tsx`: linha de artista/generos/observacao.
-- `src/components/SongActionsModal.tsx`: modal de abrir, editar, adicionar a lista, compartilhar e excluir musica.
+- `src/components/SongActionsModal.tsx`: modal de abrir, editar, enviar a lista, compartilhar e excluir musica; o picker interno de playlist usa `PlaylistPickerModal` com adicionar/remover sem fechar inesperadamente.
+- `src/components/modals/PlaylistPickerModal.tsx`: modal reutilizavel para escolha de playlist, centralizando busca, visual dos cards, estado "ja esta na lista", acao `Retirar`, estrelas e rodape com Voltar/Fechar.
 - `src/components/DrawerItem.tsx`: item do menu lateral.
 - `src/components/ConfirmDialog.tsx`: provider completo, contexto/hook/modal de confirmacao destrutiva e controller usado pelo botao voltar.
 - `src/contexts/DrawerContext.tsx`: provider/hook para abertura, fechamento e estatisticas do drawer, mantendo `AppHeader`/`AppDrawer` recebendo props finais pelo `App.tsx`.
 - `src/contexts/GenreFilterContext.tsx`: provider/hook com estado real dos filtros globais de genero, leitura inicial de `@global_filters` e persistencia.
 - `src/contexts/ManualNavigationContext.tsx`: provider/hook para `ManualNav`, removendo `nav` das props das telas.
 - `src/contexts/PlaybackContext.tsx`: provider/hook para `isPlaying`, `setIsPlaying`, `startPlaying` e `stopPlaying`, mantendo o `App.tsx` controlando header, back button e reset ao sair da cifra.
-- `src/contexts/SettingsContext.tsx`: provider/hook para `displaySettings`, `themeSettings`, updates persistidos e aplicacao das variaveis CSS do tema.
+- `src/hooks/useStageKeyboardControls.ts`: hook leve para atalhos de teclado/pedal Bluetooth no Modo Play; ignora inputs/editaveis e recebe callbacks existentes para auto-scroll, navegacao de playlist e Escape.
+- `src/contexts/SettingsContext.tsx`: provider/hook para `displaySettings`, `themeSettings`, `favoriteMode`, `folderPlaylistDisplayMode`, updates persistidos e aplicacao das variaveis CSS do tema.
 - `src/contexts/SettingsContext.tsx`: ao alternar entre tema escuro e claro, aplica defaults seguros de letra/acorde para manter a cifra legivel, preservando o tema personalizado e a edicao manual posterior.
 - `src/contexts/TopBarContext.tsx`: provider/hook para controles da top bar e acoes do header do editor, removendo callbacks dessas telas.
 - `src/navigation/types.ts`: tambem define `ManualRouteParamList`, com params reais do fluxo manual legado, incluindo `HomeDashboard` opcional e `returnTo` opcional em `FolderDetail`.
@@ -52,21 +74,47 @@ Estado validado em 2026-05-15: a refatoracao incremental abaixo esta ativa no `A
 - `src/App.tsx`: mantem a navegacao manual ativa, agora com `routeHistory` real. `nav.navigate` empilha a rota atual, o botao voltar desempilha o caminho percorrido e `getManualBackTarget(route)` fica como fallback quando nao ha historico.
 - `src/screens/SongsScreen.tsx`: lista principal de musicas extraida do `App.tsx`, ainda usando `styles` e navegacao manual por props temporarias.
 - `src/screens/SongDetailScreen.tsx`: visualizacao da cifra extraida fielmente, com transposicao, fonte por musica, lista atual, modo Play/apresentacao, auto-rolagem via `window` e primeira fatia do metronomo visual/sonoro. Historico da investigacao em `docs/AUTO_SCROLL_DEBUG.md`.
+- `src/screens/SongDetail/components/MetronomeIndicators.tsx`: indicadores visuais do metronomo extraidos como componente puro, recebendo estado e handlers por props.
+- `src/screens/SongDetail/components/RecordingMiniPlayer.tsx`: mini player visual da gravacao de referencia extraido como componente puro, mantendo audio, refs, estado e handlers na `SongDetailScreen`.
+- `src/screens/SongDetail/components/SongBottomToolbar.tsx`: barra inferior normal da musica extraida como componente visual, mantendo handlers e logica na `SongDetailScreen`.
+- `src/screens/SongDetail/components/PlayModeHeader.tsx`: header compacto do modo Play extraido como componente visual, mantendo auto-scroll, sair do Play, controles rapidos, helpMode e metronomo na `SongDetailScreen`.
+- `src/screens/SongDetail/components/CurrentPlaylistModal.tsx`: modal de lista atual extraido como componente visual, mantendo navegacao e estado na `SongDetailScreen`.
+- `src/screens/SongDetailScreen.tsx`: o fluxo `Adicionar a lista` usa `PlaylistPickerModal`; busca, regras, adicionar/retirar e persistencia continuam coordenados pela tela.
+- `src/screens/SongDetail/components/QuickControlsModal.tsx`: modal de controles rapidos do modo Play extraido como componente visual, mantendo engine do auto-scroll, handlers, refs e estado na `SongDetailScreen`.
+- `src/screens/SongDetail/components/HelpModeOverlay.tsx`: overlay/card visual do Modo Ajuda extraido como componente visual, mantendo estado, itens de ajuda, interceptacoes e TopBar/AppHeader na `SongDetailScreen`.
+- `src/screens/SongDetail/components/PerformanceNote.tsx`: post-it visual extraido como componente visual, mantendo drag, resize, autosave, refs, persistencia e helpMode na `SongDetailScreen`.
+- `src/screens/SongDetail/components/SongNormalHeader.tsx`: header normal da musica extraido como componente visual, mantendo metronomo e ajuda coordenados pela `SongDetailScreen`.
+- `src/screens/SongDetail/components/YoutubeOptionsModal.tsx`: modal visual do YouTube extraido como componente visual, com player inline isolado, abertura externa, clipboard, fallback e estado de copia na `SongDetailScreen`.
+- `src/screens/SongDetail/components/YoutubeInlinePlayer.tsx` e `src/screens/SongDetail/components/youtubeEmbed.ts`: fatia isolada para embed simples do YouTube dentro do modal, sem mover estado pesado para a `SongDetailScreen` e sem tocar auto-scroll, swipe, modo Play ou PlaybackContext.
+- `src/screens/SongDetail/components/SongLyricsBlock.tsx`: renderizacao visual das linhas da cifra extraida sem wrapper DOM adicional, mantendo container, scroll, swipe, auto-scroll, transposicao e parser na `SongDetailScreen`.
+- `src/screens/SongDetail/components/SongObservationBlock.tsx`: bloco visual da observacao extraido, mantendo condicao de exibicao e texto trimado na `SongDetailScreen`.
+- `src/screens/SongDetail/components/TomSelectorModal.tsx`: modal visual de selecao de tom extraido, mantendo estado, opcoes de tom, fechamento e transposicao na `SongDetailScreen`.
+- `src/screens/SongDetail/hooks/useAddToPlaylist.ts`: primeiro hook extraido da SongDetail; concentra abertura/busca/listas/folders/adicionar/remover/estrelas do fluxo `Adicionar a lista`, mantendo `PlaylistPickerModal` e `helpMode` na tela.
+- `src/screens/SongDetail/hooks/useCurrentPlaylistData.ts`: hook estritamente de dados da lista atual; carrega playlist de origem e deriva lista, nome, indice e anterior/proxima, mantendo `navigateToIndex`, `nav.replace`, swipe, layout, refs e gestos na `SongDetailScreen`.
+- `SongContent` completo ainda nao foi extraido: o container da cifra continua sensivel por concentrar `scrollRef`, `songScrollStyle`, `onScroll`, handlers pointer/touch e integracao com swipe/auto-scroll.
+- Revisao pos-microfatias: `useAddToPlaylist` e `useCurrentPlaylistData` foram extraidos; a parte segura da playlist atual ficou limitada a dados. Navegacao/swipe continuam congelados; `useSongRecording` e medio/alto; `useSwipeNavigation` e alto; `useAutoScroll` e critico.
 - `src/screens/SongDetailScreen.tsx`: no modo Play, musicas abertas por playlist aceitam swipe horizontal para anterior/proxima e mostram indicador discreto de proxima musica.
+- `src/screens/SongDetailScreen.tsx`: no modo Play, tambem registra atalhos de palco por teclado fisico/pedal Bluetooth usando `useStageKeyboardControls`, sem mover motor de auto-scroll, swipe, parser, post-it, audio ou storage.
 - `src/lib/chords.ts`: transposicao respeita a preferencia persistida de escrita dos acordes, preservando slash chords e extensoes/alteracoes entre parenteses.
+- Experimento de preview de acorde esta pausado por conflito intermitente de toque/gestos: `ChordLine` nao registra clique/toque em acordes, nao guarda estado de shape selecionado e nao abre `ChordPreviewModal`. O registry e o renderer visual permanecem para estudo futuro, mas qualquer retomada deve validar scroll, swipe, modo Play e Android/WebView antes de religar a interacao.
 - `src/screens/SongEditorScreen.tsx`: editor extraido fielmente, com metadados, generos, source URL em modal de copiar/abrir, editor expandido, pauta visual e configuracao de metronomo por musica.
 - `src/screens/ArtistsScreen.tsx`: agrupamento por artista com busca e filtro global.
 - `src/screens/ArtistDetailScreen.tsx`: musicas do artista, abrindo cifra e modal de acoes.
 - `src/screens/ImportScreen.tsx`: importacao por URL usando `src/services/scraper.ts`, auto-import via share/deep link, deduplicacao por artista/titulo e modal para abrir musica ja existente.
-- `src/screens/BackupScreen.tsx`: restauracao `.zip` legado e importacao `.txt` de musica CifrasGo usando `src/services/backup.ts`.
-- `src/screens/FoldersScreen.tsx`: raiz de pastas/listas, filtros, busca, criar, mover, renomear, excluir e compartilhar listas.
-- `src/screens/FolderDetailScreen.tsx`: detalhe de pasta, subpastas, listas, musicas vinculadas, adicionar/remover musicas e acoes internas.
+- `src/screens/BackupScreen.tsx`: restauracao `.zip` legado, importacao `.txt` de musica CifrasGo, backup completo e backup personalizado usando `src/services/backup.ts`.
+- `src/screens/BackupScreen.tsx`: tambem oferece Exportar PDF para listas/playlists, com modo com acordes ou Modo Vocalista, gerando arquivo sob demanda sem tocar no backup ZIP.
+- `src/screens/FoldersScreen.tsx`: raiz de pastas/listas, filtros, busca, criar, mover, renomear, excluir, compartilhar listas e exibicao global em pastas primeiro, listas primeiro ou misturado por nome.
+- `src/screens/FolderDetailScreen.tsx`: detalhe de pasta, subpastas, listas, musicas vinculadas, adicionar/remover musicas e acoes internas; a listagem principal de pastas/listas respeita o modo global de exibicao.
 - `src/screens/PlaylistDetailScreen.tsx`: detalhe de lista, adicionar/remover musicas, renderizacao de Modo roteiro com secoes coloridas e acesso a tela de organizacao.
+- `src/screens/PlaylistDetailScreen.tsx`: Fase 2 de PDFs por link ativa no Modo padrao; `Adicionar PDF` abre picker dos PDFs rapidos com link e salva item especial em `Playlist.items`, preservando `songIds`.
+- `src/screens/PdfViewerScreen.tsx`: Fase 3 de PDFs rapidos; tela isolada para abrir PDF por `pdfId`, renderizar `iframe` leve a partir de URL publica ou Blob/objectURL gerado de arquivo escolhido, e oferecer `Abrir externo` quando houver link, sem tocar SongDetail, backup/restore, roteiro ou motores sensiveis.
+- `src/hooks/useKeepAwake.ts`: hook isolado de Screen Wake Lock, usado por `SongDetailScreen` e `PdfViewerScreen` para tentar manter a tela acordada em contexto de leitura/execucao, com cleanup e reativacao em `visibilitychange`.
 - `src/screens/PlaylistStructureScreen.tsx`: tela grande de organizacao de playlists, com Modo padrao, Modo roteiro, secoes liturgicas, drag/drop, cores opcionais por secao e fallbacks manuais por botoes.
-- `src/screens/SettingsScreen.tsx`: configuracoes reais extraidas do legado, com tema, cores de acordes/letras/pauta, generos cadastrados e filtro global.
+- `src/screens/SettingsScreen.tsx`: configuracoes reais extraidas do legado, com tema, cores de acordes/letras/pauta, generos cadastrados, filtro global e `Ajustes de pastas/listas e PDF`.
+- `src/screens/BulkGenreOrganizerScreen.tsx`: Central de classificacao de generos em massa, acessada por Configuracoes > Generos, com filtros combinados, selecao em massa e aplicacao confirmada em lote.
 - `src/screens/SettingsScreen.tsx`: tambem oferece `Acordes e transposição`, permitindo escolher escrita em sustenidos, bemois ou misto/popular.
 - `src/screens/HomeDashboardScreen.tsx`: dashboard/home premium usando `/CifrasGo.png`, `db`, filtros globais e navegacao manual; pode abrir como boas-vindas sem header quando `@show_home_dashboard_on_start` estiver ativo, ou manualmente por Configuracoes.
-- `src/screens/AboutScreen.tsx`: tela interna `Sobre / Guia do usuario`, organizada por array de secoes para manter o guia funcional dentro do app.
+- `src/screens/AboutScreen.tsx`: tela interna `Sobre / Guia do usuario`, agora com apresentacao madura do CifrasGo, destaques offline-first, uso real em missa/palco/repertorio, secoes expansivas por recurso e filosofia `Estabilidade > refatoracao infinita`.
 - `MANUAL_USUARIO.md`: manual oficial e documentacao viva do uso final do CifrasGo.
 
 ## Arquivos-chave do projeto
@@ -139,6 +187,7 @@ src/
     ChordViewScreen.tsx
     FolderDetailScreen.tsx
     FoldersScreen.tsx
+    BulkGenreOrganizerScreen.tsx
     HomeDashboardScreen.tsx
     HomeScreen.tsx
     ImportScreen.tsx
@@ -184,12 +233,16 @@ O projeto esta pronto para uma rodada de producao beta com as seguintes decisoes
 - Modo Play/apresentacao da cifra esta ativo; ele esconde o header do app, mostra titulo/artista, menu, botao X e cifra em foco.
 - Primeira fatia do metronomo esta integrada: cada musica pode salvar BPM, compasso, beep visual e beep sonoro; a cifra mostra indicadores discretos no topo.
 - PlaylistStructureScreen esta integrado como nova organizacao de listas: playlists antigas continuam em Modo padrao, e novas listas podem usar Modo roteiro com secoes, drag/drop e cores por secao.
-- Auto-rolagem esta disponivel no modo Play pelo modal `Controles Rapidos`, com presets `V1` a `V8` em `px/s`, velocidade personalizada e motor baseado em `window`.
+- Auto-rolagem esta disponivel no modo Play com presets `V1` a `V8` em `px/s`, velocidade personalizada, motor baseado em `window` e sincronizacao com scroll manual.
 - Visual de icones em musicas, pastas e listas foi padronizado: pasta azul/ciano, lista amarelo/dourado, musica azul/ciano.
 - Segmented control de `FoldersScreen` esta unificado: `[Tudo][Listas][Pastas]`, sem gaps entre botoes.
+- Ajuste global de Pastas/Listas foi criado em Configuracoes: favoritos/estrelas continuam em `disabled`, `single` e `multiple`, e a ordem de exibicao usa `folders_first`, `playlists_first` ou `mixed`.
+- `src/utils/folderPlaylistDisplay.ts` centraliza a ordenacao, compondo `sortStarredItems` com os modos `Pastas primeiro`, `Listas primeiro` e `Misturado por nome`.
+- `FoldersScreen` e `FolderDetailScreen` ja foram migradas; `PlaylistPickerModal`, modais complexos de mover/enviar/adicionar, `SongDetail`, swipe e auto-scroll seguem pendentes por escopo.
+- No modo `mixed`, pastas e listas realmente se misturam por A-Z depois dos itens marcados, sem separacao por tipo.
 - `AppModal` ja cobre modais modernos importantes: tom, controles rapidos, metronomo, musica existente e link de origem.
 - Tema claro/escuro/customizado usa CSS variables aplicadas por `SettingsContext`.
-- Importacao web funciona com backend local; APK Android precisa de `VITE_API_BASE_URL` absoluto apontando para backend acessivel. O projeto possui `.env.production.example` como template e `.env.production` deve ser criado localmente, sem versionar a URL real.
+- Importacao web funciona com backend local em desenvolvimento e com backend Render em producao. APK Android precisa de `VITE_API_BASE_URL` absoluto apontando para o backend online. O projeto possui `.env.production.example` como template e `.env.production` deve ser criado localmente, sem versionar a URL real.
 
 ## Como criar uma nova tela
 
@@ -324,7 +377,7 @@ Backend de importacao:
 - O request do scraper usa `fetch` nativo do Node, nao `axios`, porque `axios`/`curl` recebiam 403 do Akamai neste ambiente.
 - Headers de navegador foram adicionados para reduzir 403.
 - Link de teste validado: `https://www.cifraclub.com.br/felipe-rodrigues/tudo-e-perda/`.
-- No APK Android, o backend nao roda dentro do app; e preciso configurar `VITE_API_BASE_URL` absoluto em `.env.production`. O template versionado e `.env.production.example`, e a URL nao deve incluir `/api/scrape`. Guia: `docs/DEPLOY_BACKEND_ANDROID.md`.
+- No APK Android, o backend nao roda dentro do app; o fluxo atual aponta `VITE_API_BASE_URL` para o backend online no Render. O template versionado e `.env.production.example`, e a URL nao deve incluir `/api/scrape`. Guia: `docs/DEPLOY_BACKEND_ANDROID.md`.
 
 ### Backup/restore
 
@@ -348,9 +401,12 @@ Status atual: `src/screens/BackupScreen.tsx` ja foi extraida e delega a restaura
 Exportacao de backup completo CifrasGo:
 
 - `buildCifrasGoFullBackupZip()` gera um `.zip` proprio versionado para backup completo.
+- `buildCifrasGoCustomBackupZip(selection)` gera um `.zip` proprio versionado para um subconjunto escolhido por musicas, artistas, listas e pastas, mantendo compatibilidade com `restoreBackupZip`.
 - O ZIP contem `cifrasgo-backup.json`, `data/songs.json`, `data/folders.json`, `data/playlists.json`, `data/folder-songs.json`, `data/genres.json`, `data/settings.json`, `readable/musicas/*.txt` e `readable/listas/*.txt`.
+- O backup personalizado usa o mesmo manifest `cifrasgo-backup.json`, mas filtra os arquivos `data/`; `data/settings.json` continua exclusivo do backup completo.
 - Os arquivos em `data/` sao a fonte canonica futura; `readable/` serve para leitura humana e usa TXT de musica importavel.
 - `BackupScreen` tem o botao "Gerar backup completo" e compartilha/baixa o ZIP via `shareBlobFile`.
+- `BackupScreen` tambem tem o botao "Configurar backup personalizado", com `AppModal`, abas `Musicas`, `Artistas`, `Listas` e `Pastas`, busca por categoria, resumo dinamico e deduplicacao de musicas no pacote final.
 - `restoreBackupZip` detecta `cifrasgo-backup.json` e restaura o backup completo em modo mesclar.
 - Merge do backup completo: musicas por artista/titulo, generos por nome normalizado, pastas por caminho completo, listas por pasta+nome, e `folder_songs` com remapeamento de IDs.
 - O restore completo e defensivo para compatibilidade retroativa: playlists sem `songIds`, sem `sections`, secoes sem `songIds` e mapas `folder_songs` incompletos sao normalizados antes do uso.
@@ -639,6 +695,17 @@ Quando/se o projeto virar Expo ou React Native CLI:
 
 ## Validacoes recentes
 
+- 2026-05-25: `npx tsc -b` e `npm run build` passaram apos adicionar `useStageKeyboardControls` para teclado fisico/pedal Bluetooth no Modo Play, reutilizando callbacks existentes da SongDetail e ignorando campos editaveis; o build no sandbox falhou com `spawn EPERM`, mas passou fora do sandbox.
+- 2026-05-25: `npx tsc -b` e `npm run build` passaram apos implementar o player inline do YouTube isolado no `YoutubeOptionsModal`; o build no sandbox falhou com `spawn EPERM`, mas passou fora do sandbox.
+- 2026-05-26: `npx tsc -b` e `npm run build` passaram apos implementar a Fase 2 de PDFs por link em listas: `Playlist.items` opcional, helper `src/utils/playlistItems.ts`, picker `Adicionar PDF` em `PlaylistDetailScreen` e renderizacao destacada no Modo padrao. O build no sandbox falhou com `spawn EPERM`, mas passou fora do sandbox.
+- 2026-05-26: `npx tsc -b` e `npm run build` passaram apos implementar a Fase 3 de PDFs por link: rota manual `PdfViewer`, `PdfViewerScreen`, clique do item PDF na playlist, `iframe` simples e fallback `Abrir externo`. O build no sandbox falhou com `spawn EPERM`, mas passou fora do sandbox.
+- 2026-05-26: `npx tsc -b` e `npm run build` passaram apos evoluir PDFs rapidos para aceitar link publico ou arquivo local escolhido: `QuickPdfLink.sourceType`, Data URL/base64 limitado a 5 MB, botao `Escolher PDF`, mensagem especifica para caminhos locais como `E:\arquivo.pdf` e viewer com origem `url`/`file`. O build no sandbox falhou com `spawn EPERM`, mas passou fora do sandbox.
+- 2026-05-26: `npx tsc -b` e `npm run build` passaram apos ajustar `PdfViewerScreen`: titulo real no header/topbar via `pdfTitle`, remocao do card grande superior e renderizacao de PDF local por Blob/objectURL com `URL.revokeObjectURL` no cleanup. O build no sandbox falhou com `spawn EPERM`, mas passou fora do sandbox.
+- 2026-05-26: PDFs rapidos foram reorganizados em `SettingsScreen`: o card separado saiu da tela principal, `Ajustes de pastas/listas` virou `Ajustes de pastas/listas e PDF`, e PDF1/PDF2/PDF3 passaram a abrir como slots recolhidos dentro do mesmo modal, preservando storage/modelo.
+- 2026-05-26: protecao contra descanso de tela adicionada por `useKeepAwake`, ativada em `SongDetailScreen` e `PdfViewerScreen` via Screen Wake Lock API quando disponivel, sem dependencias novas e sem tocar motores sensiveis.
+- 2026-05-26: `AboutScreen` atualizada para refletir o estado mais maduro do CifrasGo, incluindo PDFs rapidos, uso offline, Modo Play, backup completo/personalizado, teclado/pedal, Wake Lock e filosofia de estabilidade.
+- 2026-05-25: `npx tsc -b` passou apos ajustar o catalogo experimental de preview de acordes para maiores, menores, 7 e m7 naturais/acidentes comuns, corrigir labels E A D G B e, `baseFret` ordinal e pestanas por casa real.
+- 2026-05-25: `npx tsc -b` passou apos pausar o preview experimental de acordes por conflito intermitente de toque/gestos; `ChordLine` voltou a renderizar acordes sem `onPress`, sem estado de shape selecionado e sem modal acoplado.
 - 2026-05-14: `npm run build` passou apos extrair `SongDetailScreen`.
 - 2026-05-14: `npm run build` passou apos extrair `SongEditorScreen` e corrigir os checkmarks dos filtros de genero.
 - 2026-05-14: `npm run build` passou apos extrair `ArtistsScreen` e `ArtistDetailScreen`.
@@ -675,6 +742,7 @@ Quando/se o projeto virar Expo ou React Native CLI:
 - 2026-05-15: auto-rolagem de `SongDetailScreen` pausada temporariamente. Investigacao completa registrada em `docs/AUTO_SCROLL_DEBUG.md`; evitar reiniciar debug do zero.
 - 2026-05-15: `npm run build` passou apos restaurar/estabilizar o modo Play/apresentacao de `SongDetailScreen`, mantendo titulo, artista, menu, botao X e cifra em foco sem auto-rolagem.
 - 2026-05-18: auto-rolagem retomada no modo Play usando `window.scrollY` e `window.scrollTo`, apos diagnostico confirmar `[scroll-candidate-active]` no `window`. Controles ficam no modal `Controles Rapidos` com presets `V1` a `V8` em `px/s` e opcao personalizada.
+- 2026-05-20: documentacao viva e `AboutScreen` atualizadas para refletir backend Render, importacao online, Modo Play maduro, auto-scroll com intervencao manual, selecao multipla e melhorias Android/WebView.
 - 2026-05-15: `npm run build` passou apos criar `src/components/AppModal.tsx` e aplicar a prova no modal "Selecionar tom".
 - 2026-05-15: `npm run build` passou apos primeira fatia do metronomo em `src/types/models.ts`, `src/screens/SongEditorScreen.tsx` e `src/screens/SongDetailScreen.tsx`.
 - 2026-05-15: `npm run build`, `npx cap sync android` e `assembleDebug` passaram apos suporte Android a `ACTION_SEND`/`text/plain`, evento nativo `cifrasgoIncomingImportUrl` e auto-import por share/deep link.
@@ -688,7 +756,7 @@ Quando/se o projeto virar Expo ou React Native CLI:
 ## Proxima fatia recomendada
 
 1. Migrar modais locais aos poucos para `AppModal`, com uma tela/fluxo por vez.
-2. Hospedar/configurar backend de importacao para Android, criar `.env.production` a partir de `.env.production.example` e gerar APK com `VITE_API_BASE_URL`; ver `docs/DEPLOY_BACKEND_ANDROID.md`.
+2. Manter backend Render/UptimeRobot saudavel, revisar `.env.production` quando a URL publica mudar e validar `/api/scrape`; ver `docs/DEPLOY_BACKEND_ANDROID.md`.
 3. Testar visualmente a abertura inicial opcional da `HomeDashboardScreen` em web/Android, incluindo atalhos para entrar no fluxo normal.
 4. Validar auto-rolagem em Android/WebView real com musicas longas; a implementacao ativa usa `window`, nao `scrollRef`; ver `docs/AUTO_SCROLL_DEBUG.md`.
 5. Validar o metronomo no Android instalado: beep sonoro, beep visual, estado por musica e limpeza ao navegar.

@@ -36,6 +36,14 @@ const getSemitoneForKey = (key: string): number | null => {
   return semitone === undefined ? null : semitone;
 };
 
+export const normalizeMusicKey = (key: string | null | undefined, mode?: ChordSpellingMode): MusicKey | null => {
+  const trimmed = key?.trim();
+  if (!trimmed) return null;
+  const semitone = getSemitoneForKey(trimmed);
+  if (semitone === null) return null;
+  return getKeyOptionsForSpellingMode(mode).find((option) => KEY_TO_SEMITONE[option] === semitone) ?? null;
+};
+
 export const formatKeyForSpellingMode = (key: string, mode?: ChordSpellingMode): MusicKey => {
   const semitone = getSemitoneForKey(key);
   if (semitone === null) return 'C';

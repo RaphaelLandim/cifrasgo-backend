@@ -2,7 +2,6 @@ import { Alert } from 'react-native-web';
 import { Capacitor } from '@capacitor/core';
 import { Directory, Filesystem } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
-import JSZip from 'jszip';
 import type { Playlist, Song } from '../types/models';
 import { getSongGenreDisplay } from '../utils/genres';
 import { buildCifrasGoSongTextFile } from './songTextFormat';
@@ -28,6 +27,7 @@ interface CifrasGoPlaylistExport {
     observation?: string;
     content: string;
     sourceUrl?: string;
+    youtubeUrl?: string;
     preferredFontSize?: number;
     updatedAt?: number;
   }>;
@@ -46,6 +46,18 @@ const blobToBase64 = (blob: Blob): Promise<string> =>
 
 const isAndroidCapacitor = (): boolean =>
   Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android';
+
+const clearPreviousNativeShareCache = async (): Promise<void> => {
+  try {
+    await Filesystem.rmdir({
+      path: 'share',
+      directory: Directory.Cache,
+      recursive: true,
+    });
+  } catch {
+    // The directory may not exist on the first share.
+  }
+};
 
 const getShareErrorMessage = (error: unknown): string => {
   if (error instanceof Error && error.message) return error.message;
@@ -95,6 +107,7 @@ const shareBlobFileNative = async ({
   title: string;
   text: string;
 }): Promise<void> => {
+  await clearPreviousNativeShareCache();
   const base64 = await blobToBase64(blob);
   const path = `share/${Date.now()}-${sanitizeFileName(fileName)}`;
   const savedFile = await Filesystem.writeFile({
@@ -133,10 +146,11 @@ export const buildSongTextFile = (song: Song): string => {
     (song.artist || '').trim() ? `Artista: ${song.artist.trim()}` : 'Artista: Sem artista',
     getSongGenreDisplay(song) ? `Genero: ${getSongGenreDisplay(song)}` : '',
     song.observation?.trim() ? `Observacao: ${song.observation.trim()}` : '',
+    song.youtubeUrl?.trim() ? `YouTube: ${song.youtubeUrl.trim()}` : '',
     '',
     song.content || '',
   ];
-  return lines.filter((line, index) => index >= 4 || !!line).join('\n');
+  return lines.filter((line, index) => index >= 5 || !!line).join('\n');
 };
 
 export const downloadBlobFile = (blob: Blob, fileName: string): void => {
@@ -203,6 +217,7 @@ export const shareBlobFile = async ({
 };
 
 export const buildPlaylistZip = async (playlist: Playlist, songsById: Map<string, Song>): Promise<Blob> => {
+  const { default: JSZip } = await import('jszip');
   const zip = new JSZip();
   const playlistName = playlist.name.trim() || 'Lista';
   const songs = playlist.songIds
@@ -228,6 +243,7 @@ export const buildPlaylistZip = async (playlist: Playlist, songsById: Map<string
       observation: song.observation,
       content: song.content,
       sourceUrl: song.sourceUrl,
+      youtubeUrl: song.youtubeUrl,
       preferredFontSize: song.preferredFontSize,
       updatedAt: song.updatedAt,
     })),

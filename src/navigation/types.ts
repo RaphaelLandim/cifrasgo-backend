@@ -1,3 +1,5 @@
+import type { QuickPdfId } from '../types/models';
+
 export type RootStackParamList = {
   Home: undefined;
   ChordView: { songId: string };
@@ -7,9 +9,11 @@ export type RootStackParamList = {
 export type ManualRouteParamList = {
   Songs: undefined;
   HomeDashboard: { returnTo?: ManualRoute } | undefined;
+  RepertoireStats: undefined;
   Artists: undefined;
   ArtistDetail: { artist: string };
   Settings: undefined;
+  BulkGenreOrganizer: undefined;
   About: undefined;
   Folders: undefined;
   Import: { initialUrl?: string; autoImportKey?: number } | undefined;
@@ -41,6 +45,13 @@ export type ManualRouteParamList = {
     folderId?: string | null;
     folderName?: string;
   };
+  PdfViewer: {
+    pdfId: QuickPdfId;
+    pdfTitle?: string;
+    returnTo?: ManualRoute;
+    sourcePlaylistId?: string;
+    sourcePlaylistName?: string;
+  };
 };
 
 export type ManualRouteName = keyof ManualRouteParamList;
@@ -66,11 +77,18 @@ export interface SongEditorHeaderControls {
 }
 
 export interface TopBarControls {
+  headerTitle?: string;
+  headerSubtitle?: string;
   showSearch?: boolean;
   searchActive?: boolean;
   onSearchPress?: () => void;
   showAdd?: boolean;
   onAddPress?: () => void;
+  songDetailHelp?: {
+    active: boolean;
+    onToggle: () => void;
+    onExplain: (target: 'headerMenu' | 'headerBack' | 'headerControls' | 'help') => void;
+  };
 }
 
 export interface AppNavigation {

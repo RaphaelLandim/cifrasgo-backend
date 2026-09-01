@@ -14,6 +14,7 @@ interface CifrasGoSongMetadata {
   genres?: string[];
   observation?: string;
   sourceUrl?: string;
+  youtubeUrl?: string;
   preferredFontSize?: number;
   content?: string;
 }
@@ -40,10 +41,11 @@ const buildReadableSongText = (song: Song): string => {
     song.artist ? `Artista: ${song.artist}` : 'Artista: Sem artista',
     getSongGenreDisplay(song) ? `Genero: ${getSongGenreDisplay(song)}` : '',
     song.observation ? `Observacao: ${song.observation}` : '',
+    song.youtubeUrl ? `YouTube: ${song.youtubeUrl}` : '',
     '',
     song.content || '',
   ];
-  return lines.filter((line, index) => index >= 4 || !!line).join('\n');
+  return lines.filter((line, index) => index >= 5 || !!line).join('\n');
 };
 
 export const buildCifrasGoSongTextFile = (song: Song): string => {
@@ -58,6 +60,7 @@ export const buildCifrasGoSongTextFile = (song: Song): string => {
     genres: genres.length ? genres : undefined,
     observation: song.observation || undefined,
     sourceUrl: song.sourceUrl || undefined,
+    youtubeUrl: song.youtubeUrl || undefined,
     preferredFontSize: song.preferredFontSize,
     content: song.content || '',
   };
@@ -106,6 +109,7 @@ export const parseCifrasGoSongTextFile = (text: string): SongInput | null => {
   const genres = cleanGenres(metadata.genres);
   const observation = cleanOptionalString(metadata.observation);
   const sourceUrl = cleanOptionalString(metadata.sourceUrl);
+  const youtubeUrl = cleanOptionalString(metadata.youtubeUrl);
   const preferredFontSize =
     typeof metadata.preferredFontSize === 'number' && Number.isFinite(metadata.preferredFontSize)
       ? metadata.preferredFontSize
@@ -118,6 +122,7 @@ export const parseCifrasGoSongTextFile = (text: string): SongInput | null => {
     genres,
     observation,
     sourceUrl,
+    youtubeUrl,
     preferredFontSize,
     content,
   };

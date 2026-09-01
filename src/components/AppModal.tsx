@@ -11,6 +11,7 @@ interface AppModalProps {
   footer?: ReactNode;
   maxWidth?: number;
   showCloseButton?: boolean;
+  subtitle?: string;
 }
 
 export function AppModal({
@@ -22,6 +23,7 @@ export function AppModal({
   footer,
   maxWidth = 520,
   showCloseButton = true,
+  subtitle,
 }: AppModalProps) {
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
@@ -30,7 +32,10 @@ export function AppModal({
           <View style={styles.header}>
             <View style={styles.titleRow}>
               {icon ? <View style={styles.iconSlot}>{icon}</View> : null}
-              <Text style={styles.title} numberOfLines={1}>{title}</Text>
+              <View style={styles.titleTextBlock}>
+                <Text style={styles.title} numberOfLines={1}>{title}</Text>
+                {subtitle ? <Text style={styles.subtitle} numberOfLines={1}>{subtitle}</Text> : null}
+              </View>
             </View>
             {showCloseButton ? (
               <TouchableOpacity
@@ -62,20 +67,24 @@ const styles = StyleSheet.create({
   card: {
     width: '100%',
     maxHeight: '88%',
-    borderRadius: 14,
+    minHeight: 0,
+    borderRadius: 20,
     borderWidth: 1,
-    borderColor: 'var(--app-border-soft)',
+    borderColor: 'rgba(148, 163, 184, 0.20)',
     backgroundColor: 'var(--app-surface)',
     overflow: 'hidden',
-    boxShadow: '0 24px 70px rgba(0, 0, 0, 0.32)',
+    boxShadow: '0 24px 54px rgba(0, 0, 0, 0.26), 0 0 0 1px rgba(56, 189, 248, 0.05)',
   },
   header: {
-    minHeight: 56,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    minHeight: 62,
+    flexShrink: 0,
+    paddingHorizontal: 18,
+    paddingVertical: 13,
     backgroundColor: 'var(--app-header)',
+    backgroundImage:
+      'linear-gradient(135deg, rgba(14, 165, 233, 0.14), rgba(15, 23, 42, 0.05) 54%, rgba(168, 85, 247, 0.08))',
     borderBottomWidth: 1,
-    borderBottomColor: 'var(--app-border-soft)',
+    borderBottomColor: 'rgba(148, 163, 184, 0.16)',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -89,40 +98,60 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   iconSlot: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
+    width: 36,
+    height: 36,
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'var(--app-surface-soft)',
+    backgroundColor: 'rgba(14, 165, 233, 0.12)',
     borderWidth: 1,
-    borderColor: 'var(--app-border-soft)',
+    borderColor: 'rgba(56, 189, 248, 0.24)',
+    boxShadow: '0 10px 18px rgba(14, 165, 233, 0.10)',
+    flexShrink: 0,
   },
-  title: {
+  titleTextBlock: {
     flex: 1,
     minWidth: 0,
+  },
+  title: {
     color: 'var(--app-text)',
-    fontSize: 16,
+    fontSize: 17,
     fontWeight: '900',
+  },
+  subtitle: {
+    color: 'var(--app-muted-text)',
+    fontSize: 12,
+    lineHeight: 16,
+    marginTop: 2,
   },
   closeButton: {
     width: 36,
     height: 36,
-    borderRadius: 18,
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: 'var(--app-surface-soft)',
+    borderWidth: 1,
+    borderColor: 'rgba(148, 163, 184, 0.18)',
+    flexShrink: 0,
   },
   body: {
     backgroundColor: 'var(--app-surface)',
     padding: 16,
+    flexShrink: 1,
+    minHeight: 0,
   },
   footer: {
+    flexShrink: 0,
     paddingHorizontal: 16,
     paddingVertical: 12,
     borderTopWidth: 1,
-    borderTopColor: 'var(--app-border-soft)',
+    borderTopColor: 'rgba(148, 163, 184, 0.16)',
     backgroundColor: 'var(--app-surface)',
+    backgroundImage: 'linear-gradient(180deg, rgba(14, 165, 233, 0.03), rgba(15, 23, 42, 0.02))',
     flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
     justifyContent: 'flex-end',
     gap: 10,
   },

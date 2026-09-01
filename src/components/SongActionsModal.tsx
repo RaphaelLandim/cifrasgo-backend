@@ -1,13 +1,16 @@
 ﻿import React, { useEffect, useState } from 'react';
-import { ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native-web';
-import { ChevronRight, ListMusic, Music, Pencil, Search, Share2, Trash2 } from 'lucide-react';
+import { Text, TouchableOpacity, View } from 'react-native-web';
+import { ChevronRight, ListMusic, Music, Pencil, Share2, Trash2 } from 'lucide-react';
 import type { Playlist, Song } from '../types/models';
 import { useManualNavigation } from '../contexts/ManualNavigationContext';
+import { useSettings } from '../contexts/SettingsContext';
 import type { ManualRoute } from '../navigation/manualTypes';
 import { db } from '../services/storage';
 import { buildCifrasGoSongTextFile, sanitizeFileName, shareBlobFile } from '../services/share';
 import { AppModal } from './AppModal';
 import { ConfirmDialogContext } from './ConfirmDialog';
+import { PlaylistPickerModal } from './modals/PlaylistPickerModal';
+import { sortStarredItems, toggleStarredPlaylist } from '../utils/starredItems';
 
 export function SongActionsModal({
   visible,
@@ -25,37 +28,40 @@ export function SongActionsModal({
   styles: any;
 }) {
   const nav = useManualNavigation();
+  const { favoriteMode } = useSettings();
   const confirm = React.useContext(ConfirmDialogContext);
   const [playlistModalOpen, setPlaylistModalOpen] = useState(false);
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
-  const [playlistSearchOpen, setPlaylistSearchOpen] = useState(false);
   const [playlistQuery, setPlaylistQuery] = useState('');
+  const [addingToPlaylistId, setAddingToPlaylistId] = useState<string | null>(null);
+  const [removingFromPlaylistId, setRemovingFromPlaylistId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!visible) {
       setPlaylistModalOpen(false);
-      setPlaylistSearchOpen(false);
       setPlaylistQuery('');
+      setAddingToPlaylistId(null);
+      setRemovingFromPlaylistId(null);
     }
   }, [visible]);
 
   useEffect(() => {
     if (playlistModalOpen) return;
-    setPlaylistSearchOpen(false);
     setPlaylistQuery('');
   }, [playlistModalOpen]);
 
   useEffect(() => {
     if (!playlistModalOpen) return;
     db.getPlaylists().then((rows) => {
-      setPlaylists([...rows].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR')));
+      setPlaylists(rows);
     });
   }, [playlistModalOpen]);
 
   const closeAll = () => {
     setPlaylistModalOpen(false);
-    setPlaylistSearchOpen(false);
     setPlaylistQuery('');
+    setAddingToPlaylistId(null);
+    setRemovingFromPlaylistId(null);
     onClose();
   };
 
@@ -71,10 +77,44 @@ export function SongActionsModal({
     nav.navigate('SongEditor', { id: song.id, returnTo });
   };
 
-  const addToPlaylist = async (playlistId: string) => {
-    if (!song) return;
-    await db.addSongToPlaylist(playlistId, song.id);
-    closeAll();
+  const playlistAlreadyHasSong = (playlist: Playlist) => (song ? playlist.songIds.includes(song.id) : false);
+
+  const addToPlaylist = async (playlist: Playlist) => {
+    if (!song || playlistAlreadyHasSong(playlist) || addingToPlaylistId || removingFromPlaylistId) return;
+    setAddingToPlaylistId(playlist.id);
+    await db.addSongToPlaylist(playlist.id, song.id);
+    setPlaylists((current) =>
+      current.map((item) =>
+        item.id === playlist.id
+          ? {
+              ...item,
+              songIds: item.songIds.includes(song.id) ? item.songIds : [...item.songIds, song.id],
+            }
+          : item
+      )
+    );
+    setAddingToPlaylistId(null);
+  };
+
+  const removeFromPlaylist = async (playlist: Playlist) => {
+    if (!song || !playlistAlreadyHasSong(playlist) || addingToPlaylistId || removingFromPlaylistId) return;
+    setRemovingFromPlaylistId(playlist.id);
+    await db.removeSongFromPlaylist(playlist.id, song.id);
+    setPlaylists((current) =>
+      current.map((item) =>
+        item.id === playlist.id
+          ? { ...item, songIds: item.songIds.filter((songId) => songId !== song.id) }
+          : item
+      )
+    );
+    setRemovingFromPlaylistId(null);
+  };
+  const togglePlaylistStar = (playlist: Playlist) => {
+    setPlaylists((current) => {
+      const next = toggleStarredPlaylist(current, playlist.id, favoriteMode);
+      if (next !== current) void db.savePlaylists(next);
+      return next;
+    });
   };
 
   const shareSongFile = async () => {
@@ -118,9 +158,13 @@ export function SongActionsModal({
   };
 
   const playlistSearchText = playlistQuery.trim().toLowerCase();
-  const filteredPlaylists = playlists.filter((playlist) =>
+  const filteredPlaylists = sortStarredItems(playlists, favoriteMode).filter((playlist) =>
     !playlistSearchText ? true : playlist.name.toLowerCase().includes(playlistSearchText)
   );
+  const getPlaylistSubtitle = (playlist: Playlist) =>
+    playlistAlreadyHasSong(playlist)
+      ? 'Já está nesta lista'
+      : `${playlist.songIds.length} música${playlist.songIds.length === 1 ? '' : 's'}`;
 
   return (
     <>
@@ -172,74 +216,28 @@ export function SongActionsModal({
         </TouchableOpacity>
       </AppModal>
 
-      <AppModal
+      <PlaylistPickerModal
         visible={visible && !!song && playlistModalOpen}
         title="Enviar a uma lista"
+        contextText={song ? song.title : ''}
+        query={playlistQuery}
+        playlists={filteredPlaylists}
+        addingToPlaylistId={addingToPlaylistId}
+        removingFromPlaylistId={removingFromPlaylistId}
+        onQueryChange={setPlaylistQuery}
+        onBack={() => setPlaylistModalOpen(false)}
         onClose={closeAll}
-        icon={<ListMusic size={16} color="#4FC3F7" />}
-        footer={
-          <>
-            <TouchableOpacity onPress={() => setPlaylistModalOpen(false)}>
-              <Text style={{ color: '#aaa', fontWeight: '800' }}>Voltar</Text>
-            </TouchableOpacity>
-            <TouchableOpacity onPress={closeAll}>
-              <Text style={{ color: '#4FC3F7', fontWeight: '800' }}>Fechar</Text>
-            </TouchableOpacity>
-          </>
-        }
-      >
-        <View style={styles.playlistPickerHeader}>
-          <View style={styles.listRowText}>
-            <Text style={styles.createHint}>{song ? song.title : ''}</Text>
-          </View>
-          <TouchableOpacity
-            style={[styles.iconBtn, playlistSearchOpen && styles.statusPillActive]}
-            onPress={() => {
-              const next = !playlistSearchOpen;
-              setPlaylistSearchOpen(next);
-              if (!next) setPlaylistQuery('');
-            }}
-          >
-            <Search size={19} color={playlistSearchOpen ? '#4FC3F7' : '#bbb'} />
-          </TouchableOpacity>
-        </View>
-        {playlistSearchOpen ? (
-          <View style={[styles.search, styles.playlistPickerSearch]}>
-            <Search size={18} color="#999" />
-            <TextInput
-              style={styles.inputSearch}
-              placeholder="Buscar lista..."
-              placeholderTextColor="#666"
-              value={playlistQuery}
-              onChangeText={setPlaylistQuery}
-              autoFocus
-            />
-          </View>
-        ) : null}
-        <ScrollView style={{ marginTop: 4, maxHeight: 420 }} contentContainerStyle={{ paddingBottom: 10 }}>
-          {filteredPlaylists.length ? (
-            filteredPlaylists.map((playlist) => {
-              const alreadyAdded = song ? playlist.songIds.includes(song.id) : false;
-              return (
-                <TouchableOpacity
-                  key={playlist.id}
-                  style={styles.modalActionBtn}
-                  onPress={() => addToPlaylist(playlist.id)}
-                >
-                  <Text style={styles.modalActionText}>{playlist.name}</Text>
-                  <Text style={styles.subtitle}>
-                    {alreadyAdded ? 'Já está nesta lista' : `${playlist.songIds.length} música${playlist.songIds.length === 1 ? '' : 's'}`}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })
-          ) : (
-            <Text style={[styles.subtitle, { marginTop: 6 }]}>
-              {playlists.length ? 'Nenhuma lista encontrada.' : 'Nenhuma lista cadastrada.'}
-            </Text>
-          )}
-        </ScrollView>
-      </AppModal>
+        playlistAlreadyHasSong={playlistAlreadyHasSong}
+        getPlaylistSubtitle={getPlaylistSubtitle}
+        onSelectPlaylist={(playlist) => void addToPlaylist(playlist)}
+        onRemoveFromPlaylist={(playlist) => void removeFromPlaylist(playlist)}
+        showStars={favoriteMode !== 'disabled'}
+        onToggleStarredPlaylist={togglePlaylistStar}
+        actionLabel="Enviar"
+        busyLabel="Enviando..."
+        alreadyAddedLabel="Já está nesta lista"
+        emptyLabel={playlists.length ? 'Nenhuma lista encontrada.' : 'Nenhuma lista cadastrada.'}
+      />
     </>
   );
 }

@@ -33,6 +33,12 @@ interface SongEditorScreenProps {
 const COMPASSO_OPTIONS: SongCompasso[] = ['2/4', '3/4', '4/4', '6/8'];
 const DEFAULT_BPM = 120;
 const AUDIO_NOTE_MAX_SECONDS = 30;
+const EDITOR_LINE_HEIGHT_RATIO = 1.34;
+const editorMonoFont = Platform.OS === 'ios' ? 'Courier' : 'monospace';
+
+const YoutubeBadgeIcon = ({ active, size = 22 }: { active: boolean; size?: number }) => (
+  <Play size={size} color={active ? '#fff' : 'var(--app-muted-text)'} fill={active ? '#fff' : 'transparent'} />
+);
 
 const getCompassoBeats = (value: SongCompasso) => {
   if (value === '2/4') return 2;
@@ -79,7 +85,7 @@ export function SongEditorScreen({
   styles,
 }: SongEditorScreenProps) {
   const nav = useManualNavigation();
-  const { displaySettings: settings } = useSettings();
+  const { displaySettings: settings, themeSettings } = useSettings();
   const { setSongEditorHeaderControls, clearSongEditorHeaderControls } = useSongEditorHeaderControls();
   const isNew = id === 'new';
   const webEditorHeight = 'calc(100dvh - 250px)';
@@ -94,6 +100,10 @@ export function SongEditorScreen({
   const [sourceCopied, setSourceCopied] = useState(false);
   const [content, setContent] = useState('');
   const [sourceUrl, setSourceUrl] = useState('');
+  const [youtubeUrl, setYoutubeUrl] = useState('');
+  const [openYoutubeModal, setOpenYoutubeModal] = useState(false);
+  const [youtubeDraft, setYoutubeDraft] = useState('');
+  const [youtubeLinkCopied, setYoutubeLinkCopied] = useState(false);
   const [editorFontSize, setEditorFontSize] = useState(17);
   const [editorExpanded, setEditorExpanded] = useState(false);
   const [bpm, setBpm] = useState(String(DEFAULT_BPM));
@@ -136,6 +146,7 @@ export function SongEditorScreen({
           setSelectedGenreKeys(new Set(getSongGenreKeys(song)));
           setContent(initialContentOverride ?? song.content);
           setSourceUrl(song.sourceUrl || '');
+          setYoutubeUrl(song.youtubeUrl || '');
           setEditorFontSize(song.preferredFontSize ?? 17);
           setBpm(String(song.bpm ?? DEFAULT_BPM));
           setCompasso(song.compasso ?? '4/4');
@@ -408,6 +419,10 @@ export function SongEditorScreen({
 
   const save = React.useCallback(async () => {
     if (!title.trim()) return Alert.alert('Informe o título');
+    const nextYoutubeUrl = youtubeUrl.trim();
+    if (nextYoutubeUrl && !/^https?:\/\//i.test(nextYoutubeUrl)) {
+      return Alert.alert('Link do YouTube invalido', 'Informe uma URL com http:// ou https://.');
+    }
     const nextGenreKeys = Array.from(selectedGenreKeys);
     const genreDisplay = nextGenreKeys.map((genre) => getGenreDisplayName(genre, registeredGenres)).join(', ');
     const nextBpm = parseBpm();
@@ -421,6 +436,7 @@ export function SongEditorScreen({
         observation,
         content,
         sourceUrl,
+        youtubeUrl: nextYoutubeUrl || undefined,
         bpm: nextBpm,
         compasso,
         beepVisualEnabled,
@@ -441,6 +457,7 @@ export function SongEditorScreen({
       observation,
       content,
       sourceUrl,
+      youtubeUrl: nextYoutubeUrl || undefined,
       bpm: nextBpm,
       compasso,
       beepVisualEnabled,
@@ -451,7 +468,7 @@ export function SongEditorScreen({
       updatedAt: Date.now(),
     });
     nav.navigate('SongDetail', { id, returnTo });
-  }, [artist, audioNoteBase64, audioNoteMimeType, audioNoteUpdatedAt, beepSoundEnabled, beepVisualEnabled, compasso, content, id, isNew, nav, observation, parseBpm, registeredGenres, returnTo, selectedGenreKeys, sourceUrl, title]);
+  }, [artist, audioNoteBase64, audioNoteMimeType, audioNoteUpdatedAt, beepSoundEnabled, beepVisualEnabled, compasso, content, id, isNew, nav, observation, parseBpm, registeredGenres, returnTo, selectedGenreKeys, sourceUrl, title, youtubeUrl]);
 
   const cancel = React.useCallback(() => {
     if (isNew) {
@@ -475,6 +492,55 @@ export function SongEditorScreen({
     if (!sourceUrl) return;
     window.open(sourceUrl, '_blank', 'noopener,noreferrer');
   }, [sourceUrl]);
+
+  const openYoutubeEditor = React.useCallback(() => {
+    setYoutubeDraft(youtubeUrl);
+    setYoutubeLinkCopied(false);
+    setOpenYoutubeModal(true);
+  }, [youtubeUrl]);
+
+  const saveYoutubeLink = React.useCallback(() => {
+    const nextYoutubeUrl = youtubeDraft.trim();
+    if (nextYoutubeUrl && !/^https?:\/\//i.test(nextYoutubeUrl)) {
+      Alert.alert('Link do YouTube invalido', 'Informe uma URL com http:// ou https://.');
+      return;
+    }
+    setYoutubeUrl(nextYoutubeUrl || '');
+    setOpenYoutubeModal(false);
+  }, [youtubeDraft]);
+
+  const removeYoutubeLink = React.useCallback(() => {
+    setYoutubeUrl('');
+    setYoutubeDraft('');
+    setYoutubeLinkCopied(false);
+    setOpenYoutubeModal(false);
+  }, []);
+
+  const copyYoutubeLinkToClipboard = React.useCallback(async () => {
+    const text = youtubeDraft.trim() || youtubeUrl.trim();
+    if (!text) {
+      Alert.alert('Sem link', 'Cadastre um link do YouTube antes de copiar.');
+      return;
+    }
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+      }
+      setYoutubeLinkCopied(true);
+    } catch {
+      Alert.alert('Erro', 'Nao foi possivel copiar o link.');
+    }
+  }, [youtubeDraft, youtubeUrl]);
 
   const copySourceUrl = React.useCallback(async () => {
     if (!sourceUrl) return;
@@ -508,7 +574,19 @@ export function SongEditorScreen({
     return clearSongEditorHeaderControls;
   }, [cancel, clearSongEditorHeaderControls, openSource, save, setSongEditorHeaderControls, sourceUrl]);
 
-  const editorLineHeight = Math.max(24, Math.round(editorFontSize * 1.85));
+  const editorLineHeight = Math.max(22, Math.round(editorFontSize * EDITOR_LINE_HEIGHT_RATIO));
+  const editorStaffLineColor =
+    themeSettings.mode === 'light' && settings.staffLineColor.includes('255,255,255')
+      ? 'rgba(16,24,40,0.14)'
+      : settings.staffLineColor;
+  const editorTextInputStyle = {
+    fontSize: editorFontSize,
+    lineHeight: editorLineHeight,
+    fontFamily: editorMonoFont,
+    fontWeight: '400',
+    includeFontPadding: false,
+    color: 'var(--app-text)',
+  } as const;
   const editorTextareaStyle = (expanded = false): React.CSSProperties => {
     const paddingTop = expanded ? 14 : 10;
     return {
@@ -523,12 +601,18 @@ export function SongEditorScreen({
       outline: 'none',
       resize: 'none',
       backgroundColor: 'transparent',
-      color: '#fff',
+      color: 'var(--app-text)',
       lineHeight: `${editorLineHeight}px`,
       fontSize: `${editorFontSize}px`,
-      fontFamily: 'monospace',
+      fontFamily: editorMonoFont,
+      fontWeight: 400,
+      WebkitTextSizeAdjust: '100%',
+      textSizeAdjust: '100%',
+      letterSpacing: '0',
       boxSizing: 'border-box',
-      backgroundImage: `linear-gradient(to bottom, transparent ${Math.max(0, editorLineHeight - 1)}px, ${settings.staffLineColor} ${editorLineHeight}px)`,
+      tabSize: 4,
+      caretColor: 'var(--app-accent)',
+      backgroundImage: `linear-gradient(to bottom, transparent ${Math.max(0, editorLineHeight - 1)}px, ${editorStaffLineColor} ${editorLineHeight}px)`,
       backgroundSize: `100% ${editorLineHeight}px`,
       backgroundPosition: `0 ${paddingTop}px`,
       backgroundAttachment: 'local',
@@ -581,6 +665,15 @@ export function SongEditorScreen({
           >
             <Timer size={20} color="var(--app-accent)" />
           </TouchableOpacity>
+          <TouchableOpacity
+            style={[
+              metronomeEditorStyles.metronomeButton,
+              youtubeUrl.trim() ? youtubeLinkStyles.youtubeButtonHasLink : null,
+            ]}
+            onPress={openYoutubeEditor}
+          >
+            <YoutubeBadgeIcon active={!!youtubeUrl.trim()} />
+          </TouchableOpacity>
         </View>
         <TextInput
           style={styles.input}
@@ -615,13 +708,13 @@ export function SongEditorScreen({
             />
           ) : (
             <TextInput
-              style={[styles.editorContentInput, { fontSize: editorFontSize, lineHeight: editorLineHeight }]}
+              style={[styles.editorContentInput, editorTextInputStyle]}
               multiline
               textAlignVertical="top"
               value={content}
               onChangeText={setContent}
               placeholder="Cole os acordes/letra"
-              placeholderTextColor="#666"
+              placeholderTextColor="var(--app-subtle-text)"
             />
           )}
         </View>
@@ -653,14 +746,14 @@ export function SongEditorScreen({
                 style={[
                   styles.editorContentInput,
                   styles.expandedEditorInput,
-                  { fontSize: editorFontSize, lineHeight: editorLineHeight },
+                  editorTextInputStyle,
                 ]}
                 multiline
                 textAlignVertical="top"
                 value={content}
                 onChangeText={setContent}
                 placeholder="Cole os acordes/letra"
-                placeholderTextColor="#666"
+                placeholderTextColor="var(--app-subtle-text)"
                 autoFocus
               />
             )}
@@ -916,6 +1009,66 @@ export function SongEditorScreen({
           </TouchableOpacity>
         </View>
       </AppModal>
+      <AppModal
+        visible={openYoutubeModal}
+        title="YouTube da música"
+        onClose={() => setOpenYoutubeModal(false)}
+        icon={<YoutubeBadgeIcon active={!!youtubeUrl.trim()} size={18} />}
+        maxWidth={520}
+        footer={
+          <>
+            <TouchableOpacity style={styles.modalGhostBtn} onPress={() => setOpenYoutubeModal(false)}>
+              <Text style={styles.modalGhostText}>Fechar</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.modalPrimaryBtn} onPress={saveYoutubeLink}>
+              <Text style={styles.modalPrimaryText}>Salvar link</Text>
+            </TouchableOpacity>
+          </>
+        }
+      >
+        <View style={youtubeLinkStyles.body}>
+          <View style={youtubeLinkStyles.infoBox}>
+            <Text style={youtubeLinkStyles.infoTitle}>{title.trim() || 'Sem tÃ­tulo'}</Text>
+            <Text style={youtubeLinkStyles.infoText}>
+              Cadastre um link do YouTube para abrir uma referência externa desta música quando precisar.
+            </Text>
+          </View>
+          <TextInput
+            style={[styles.input, youtubeLinkStyles.input]}
+            value={youtubeDraft}
+            onChangeText={setYoutubeDraft}
+            placeholder="https://www.youtube.com/watch?v=... ou https://youtu.be/..."
+            placeholderTextColor="#666"
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          {youtubeLinkCopied ? (
+            <View style={sourceLinkStyles.copiedRow}>
+              <Copy size={14} color="var(--app-accent)" />
+              <Text style={sourceLinkStyles.copiedText}>Link copiado</Text>
+            </View>
+          ) : null}
+          <View style={youtubeLinkStyles.actionRow}>
+            <TouchableOpacity
+              style={[
+                youtubeLinkStyles.secondaryAction,
+                !youtubeDraft.trim() && !youtubeUrl.trim() ? youtubeLinkStyles.disabledAction : null,
+              ]}
+              disabled={!youtubeDraft.trim() && !youtubeUrl.trim()}
+              onPress={copyYoutubeLinkToClipboard}
+            >
+              <Copy size={14} color="var(--app-accent)" />
+              <Text style={youtubeLinkStyles.secondaryActionText}>Copiar link da música</Text>
+            </TouchableOpacity>
+            {youtubeUrl.trim() ? (
+              <TouchableOpacity style={youtubeLinkStyles.removeAction} onPress={removeYoutubeLink}>
+                <Trash2 size={14} color="#ff8a8a" />
+                <Text style={youtubeLinkStyles.removeActionText}>Remover link</Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+        </View>
+      </AppModal>
     </View>
   );
 }
@@ -956,6 +1109,79 @@ const sourceLinkStyles = StyleSheet.create({
   },
   openInlineText: {
     color: 'var(--app-accent)',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+});
+
+const youtubeLinkStyles = StyleSheet.create({
+  youtubeButtonHasLink: {
+    borderColor: '#ff4d4d',
+    backgroundColor: '#ff0000',
+  },
+  body: {
+    gap: 12,
+  },
+  infoBox: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'var(--app-border-soft)',
+    backgroundColor: 'var(--app-surface-alt)',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  infoTitle: {
+    color: 'var(--app-text)',
+    fontSize: 15,
+    fontWeight: '900',
+  },
+  infoText: {
+    color: 'var(--app-muted-text)',
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 4,
+  },
+  input: {
+    marginHorizontal: 0,
+    marginVertical: 0,
+  },
+  actionRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  secondaryAction: {
+    minHeight: 38,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'var(--app-border-soft)',
+    backgroundColor: 'var(--app-surface-alt)',
+    paddingHorizontal: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  secondaryActionText: {
+    color: 'var(--app-accent)',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  disabledAction: {
+    opacity: 0.45,
+  },
+  removeAction: {
+    minHeight: 38,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(248, 113, 113, 0.35)',
+    backgroundColor: 'rgba(127, 29, 29, 0.22)',
+    paddingHorizontal: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  removeActionText: {
+    color: '#ff8a8a',
     fontSize: 13,
     fontWeight: '800',
   },

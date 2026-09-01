@@ -1,0 +1,11 @@
+<svg width="360" height="440" viewBox="0 0 360 440" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="360" height="440" fill="#07140d"/>
+  <radialGradient id="g" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(132 100) scale(190 210)">
+    <stop stop-color="#22c55e" stop-opacity=".5"/><stop offset="1" stop-color="#020617" stop-opacity="0"/>
+  </radialGradient>
+  <rect width="360" height="440" fill="url(#g)"/>
+  <circle cx="180" cy="210" r="74" fill="#020617" opacity=".68"/>
+  <circle cx="180" cy="210" r="34" fill="#0f172a" opacity=".95"/>
+  <path d="M180 70v140l98 98" stroke="#86efac" stroke-opacity=".28" stroke-width="12" stroke-linecap="round"/>
+  <path d="M78 360c66-34 137-40 224 0" stroke="#86efac" stroke-opacity=".2" stroke-width="16" stroke-linecap="round"/>
+</svg>

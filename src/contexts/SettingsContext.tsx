@@ -10,13 +10,18 @@ import {
   resolveDisplaySettings,
   resolveThemePalette,
 } from '../theme/theme';
-import type { DisplaySettings, ThemePalette, ThemeSettings } from '../types/models';
+import type { DisplaySettings, FavoriteMode, FolderPlaylistDisplayMode, ThemePalette, ThemeSettings } from '../types/models';
+import { normalizeFolderPlaylistDisplayMode } from '../utils/folderPlaylistDisplay';
 
 interface SettingsContextValue {
   displaySettings: DisplaySettings;
   updateDisplaySettings: (next: Partial<DisplaySettings>) => void;
   themeSettings: ThemeSettings;
   updateThemeSettings: (next: Partial<ThemeSettings>) => void;
+  favoriteMode: FavoriteMode;
+  updateFavoriteMode: (mode: FavoriteMode) => void;
+  folderPlaylistDisplayMode: FolderPlaylistDisplayMode;
+  updateFolderPlaylistDisplayMode: (mode: FolderPlaylistDisplayMode) => void;
 }
 
 const SettingsContext = React.createContext<SettingsContextValue | null>(null);
@@ -45,9 +50,32 @@ const loadThemeSettings = (): ThemeSettings => {
   }
 };
 
+const loadFavoriteMode = (): FavoriteMode => {
+  const raw = window.localStorage.getItem(STORAGE_KEYS.favoriteMode);
+  if (!raw) return 'disabled';
+  try {
+    const parsed = JSON.parse(raw) as FavoriteMode;
+    return parsed === 'single' || parsed === 'multiple' ? parsed : 'disabled';
+  } catch {
+    return 'disabled';
+  }
+};
+
+const loadFolderPlaylistDisplayMode = (): FolderPlaylistDisplayMode => {
+  const raw = window.localStorage.getItem(STORAGE_KEYS.folderPlaylistDisplayMode);
+  if (!raw) return 'folders_first';
+  try {
+    return normalizeFolderPlaylistDisplayMode(JSON.parse(raw));
+  } catch {
+    return 'folders_first';
+  }
+};
+
 export function SettingsProvider({ children }: { children: React.ReactNode }) {
   const [displaySettings, setDisplaySettings] = React.useState<DisplaySettings>(loadDisplaySettings);
   const [themeSettings, setThemeSettings] = React.useState<ThemeSettings>(loadThemeSettings);
+  const [favoriteMode, setFavoriteMode] = React.useState<FavoriteMode>(loadFavoriteMode);
+  const [folderPlaylistDisplayMode, setFolderPlaylistDisplayMode] = React.useState<FolderPlaylistDisplayMode>(loadFolderPlaylistDisplayMode);
   const themeSettingsRef = React.useRef(themeSettings);
 
   React.useEffect(() => {
@@ -86,6 +114,17 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
+  const updateFavoriteMode = React.useCallback((mode: FavoriteMode) => {
+    setFavoriteMode(mode);
+    window.localStorage.setItem(STORAGE_KEYS.favoriteMode, JSON.stringify(mode));
+  }, []);
+
+  const updateFolderPlaylistDisplayMode = React.useCallback((mode: FolderPlaylistDisplayMode) => {
+    const normalized = normalizeFolderPlaylistDisplayMode(mode);
+    setFolderPlaylistDisplayMode(normalized);
+    window.localStorage.setItem(STORAGE_KEYS.folderPlaylistDisplayMode, JSON.stringify(normalized));
+  }, []);
+
   React.useEffect(() => {
     const palette = resolveThemePalette(themeSettings);
     Object.entries(THEME_CSS_VARIABLES).forEach(([key, cssVariable]) => {
@@ -101,8 +140,21 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
       updateDisplaySettings,
       themeSettings,
       updateThemeSettings,
+      favoriteMode,
+      updateFavoriteMode,
+      folderPlaylistDisplayMode,
+      updateFolderPlaylistDisplayMode,
     }),
-    [displaySettings, themeSettings, updateDisplaySettings, updateThemeSettings]
+    [
+      displaySettings,
+      favoriteMode,
+      folderPlaylistDisplayMode,
+      themeSettings,
+      updateDisplaySettings,
+      updateFavoriteMode,
+      updateFolderPlaylistDisplayMode,
+      updateThemeSettings,
+    ]
   );
 
   return <SettingsContext.Provider value={value}>{children}</SettingsContext.Provider>;

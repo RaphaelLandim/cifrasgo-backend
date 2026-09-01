@@ -18,20 +18,20 @@ export const darkPalette: ThemePalette = {
 };
 
 export const lightPalette: ThemePalette = {
-  background: '#f5f7fb',
-  surface: '#ffffff',
-  surfaceAlt: '#eef3f8',
-  surfaceSoft: '#e7eef7',
-  header: '#b1b8be',
-  border: '#d8e1ec',
-  borderSoft: '#c5d2e0',
-  text: '#101828',
-  mutedText: '#475467',
-  subtleText: '#667085',
-  accent: '#2563eb',
-  accentSoft: 'rgba(37,99,235,0.12)',
+  background: '#f7f4ed',
+  surface: '#fffdf8',
+  surfaceAlt: '#f1f5f7',
+  surfaceSoft: '#eef4f8',
+  header: '#f8fafc',
+  border: '#d8e2ea',
+  borderSoft: '#c7d4df',
+  text: '#111827',
+  mutedText: '#475569',
+  subtleText: '#64748b',
+  accent: '#0f83c9',
+  accentSoft: 'rgba(15,131,201,0.12)',
   danger: '#dc2626',
-  overlay: 'rgba(15,23,42,0.42)',
+  overlay: 'rgba(17,24,39,0.38)',
 };
 
 export const appTheme = {
@@ -65,6 +65,8 @@ export const DEFAULT_DISPLAY_SETTINGS: DisplaySettings = {
   lyricsBold: false,
   staffLineColor: 'rgba(255,255,255,0.28)',
   chordSpellingMode: 'mixed',
+  chordFontFamily: 'default',
+  isVocalModeEnabled: false,
 };
 
 export const resolveDisplaySettings = (settings?: Partial<DisplaySettings>): DisplaySettings => {
@@ -77,6 +79,15 @@ export const resolveDisplaySettings = (settings?: Partial<DisplaySettings>): Dis
       merged.chordSpellingMode === 'mixed'
         ? merged.chordSpellingMode
         : 'mixed',
+    chordFontFamily:
+      merged.chordFontFamily === 'default' ||
+      merged.chordFontFamily === 'system' ||
+      merged.chordFontFamily === 'courier' ||
+      merged.chordFontFamily === 'robotoMono' ||
+      merged.chordFontFamily === 'droidSansMono'
+        ? merged.chordFontFamily
+        : 'default',
+    isVocalModeEnabled: merged.isVocalModeEnabled === true,
   };
 };
 
@@ -87,7 +98,7 @@ export const DARK_THEME_DISPLAY_DEFAULTS: Pick<DisplaySettings, 'lyricsColor' | 
 
 export const LIGHT_THEME_DISPLAY_DEFAULTS: Pick<DisplaySettings, 'lyricsColor' | 'chordColor'> = {
   lyricsColor: '#000000',
-  chordColor: '#2563eb',
+  chordColor: '#0f83c9',
 };
 
 export const DEFAULT_THEME_SETTINGS: ThemeSettings = {

@@ -6,12 +6,16 @@ export function getManualRouteTitle(route: ManualRoute): string {
       return 'Músicas';
     case 'HomeDashboard':
       return 'Tela inicial';
+    case 'RepertoireStats':
+      return 'Estatísticas';
     case 'Artists':
       return 'Artistas';
     case 'ArtistDetail':
       return 'Músicas do artista';
     case 'Settings':
       return 'Configurações';
+    case 'BulkGenreOrganizer':
+      return 'Organizar gêneros';
     case 'About':
       return 'Sobre / Guia';
     case 'Folders':
@@ -26,6 +30,8 @@ export function getManualRouteTitle(route: ManualRoute): string {
       return route.params?.playlistName ? `Lista - ${route.params.playlistName}` : 'Lista';
     case 'PlaylistStructure':
       return 'Organizar lista';
+    case 'PdfViewer':
+      return route.params?.pdfTitle || 'PDF';
     case 'SongDetail':
       return 'Música';
     case 'SongEditor':
@@ -41,6 +47,10 @@ export function getManualBackTarget(route: ManualRoute): ManualRoute | null {
       return { name: 'Artists' };
     case 'HomeDashboard':
       return (route.params?.returnTo as ManualRoute | undefined) ?? null;
+    case 'RepertoireStats':
+      return { name: 'HomeDashboard' };
+    case 'BulkGenreOrganizer':
+      return { name: 'Settings' };
     case 'About':
       return { name: 'Settings' };
     case 'FolderDetail':
@@ -59,6 +69,18 @@ export function getManualBackTarget(route: ManualRoute): ManualRoute | null {
           folderName: route.params.folderName,
         },
       };
+    case 'PdfViewer':
+      return (route.params?.returnTo as ManualRoute | undefined) ?? (
+        route.params?.sourcePlaylistId
+          ? {
+              name: 'PlaylistDetail',
+              params: {
+                playlistId: route.params.sourcePlaylistId,
+                playlistName: route.params.sourcePlaylistName,
+              },
+            }
+          : { name: 'Folders' }
+      );
     case 'SongDetail':
       return (route.params?.returnTo as ManualRoute | undefined) ?? { name: 'Songs' };
     case 'SongEditor':

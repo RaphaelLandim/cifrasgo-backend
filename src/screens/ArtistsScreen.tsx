@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { FlatList, Text, TextInput, TouchableOpacity, View } from 'react-native-web';
+import { FlatList, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native-web';
 import { ChevronRight, Mic2, Search } from 'lucide-react';
 import { useGenreFilter } from '../contexts/GenreFilterContext';
 import { useManualNavigation } from '../contexts/ManualNavigationContext';
@@ -73,9 +73,9 @@ export function ArtistsScreen({
         contentContainerStyle={{ paddingBottom: 120 }}
         renderItem={({ item: artist }: { item: string }) => (
           <TouchableOpacity style={styles.listRow} onPress={() => nav.navigate('ArtistDetail', { artist })}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              <View style={{ alignItems: 'center', justifyContent: 'center' }}>
-                <Mic2 size={15} color="#4FC3F7" />
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+              <View style={localStyles.artistIconTile}>
+                <Mic2 size={19} color="#22c55e" />
               </View>
 
               <View style={styles.listRowText}>
@@ -90,3 +90,18 @@ export function ArtistsScreen({
     </View>
   );
 }
+
+const localStyles = StyleSheet.create({
+  artistIconTile: {
+    width: 34,
+    height: 34,
+    borderRadius: 5,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(14, 165, 233, 0.10)',
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.22)',
+    boxShadow: '0 10px 20px rgba(14, 165, 233, 0.10)',
+    flexShrink: 0,
+  },
+});

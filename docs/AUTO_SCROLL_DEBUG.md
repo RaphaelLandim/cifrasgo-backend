@@ -2,7 +2,17 @@
 
 ## Status
 
-Atualizado em 2026-05-18: a investigacao identificou que o scroll real da cifra, no web, e o `window`. A implementacao retomada em `SongDetailScreen` usa `window.scrollY` e `window.scrollTo`, nao `scrollRef`, `getScrollableNode` ou `getNativeScrollRef`.
+Atualizado em 2026-05-20: a investigacao identificou que o scroll real da cifra e o `window`. A implementacao ativa em `SongDetailScreen` usa `window.scrollY` e `window.scrollTo`, nao `scrollRef`, `getScrollableNode` ou `getNativeScrollRef`.
+
+Estado atual:
+
+- motor baseado em `requestAnimationFrame`;
+- posicao acumulada em `autoScrollPositionRef`;
+- presets `V1` a `V8` em `px/s`;
+- velocidade personalizada entre 5 e 150 px/s;
+- intervencao manual durante o auto-scroll sincroniza refs internas com `window.scrollY`;
+- eventos humanos (`wheel`, `touch*`, `pointer*`) pausam temporariamente o avanco automatico sem desligar o auto-scroll;
+- `scroll` programatico gerado pelo proprio `window.scrollTo` e filtrado por `autoScrollProgrammaticRef`.
 
 O historico abaixo permanece para evitar voltar aos caminhos que nao funcionaram.
 
@@ -26,9 +36,10 @@ Decisao tecnica:
 
 UI retomada:
 
-- controle visivel apenas no modal `Controles Rapidos` do modo Play;
-- presets `Lento`, `Medio` e `Rapido`;
-- botao `Iniciar` / `Parar`;
+- controle principal no modal `Controles Rapidos` do modo Play;
+- presets `V1` a `V8`;
+- botao de topo do modo Play inicia/para o rollover;
+- opcao `Personalizado` no bloco de auto-scroll;
 - parada automatica ao chegar no fim, sair da musica ou sair do modo Play.
 
 O objetivo deste documento e evitar novas tentativas no escuro e deixar registrado tudo que ja foi investigado. Se a feature voltar a falhar, nao retomar os caminhos baseados em `scrollRef`; comecar pelo contrato atual baseado em `window`.
@@ -211,30 +222,30 @@ Esses logs indicam que o problema nao era apenas ausencia de `ref`. O no existia
 
 ## Conclusao atual
 
-- A auto-rolagem nao esta confiavel no web.
-- `scrollHeight` existe.
-- `scrollTop` nao altera corretamente no elemento encontrado.
-- em uma etapa anterior, `window.scrollY` tambem permaneceu `0`; o diagnostico posterior mostrou que o scroll real ativo e `window`.
-- O problema parece estar na composicao de layout/elemento rolavel real, nao apenas no `requestAnimationFrame`.
-- A feature foi retomada em 2026-05-18 com implementacao simples baseada em `window`.
+- A auto-rolagem ativa e confiavel no web quando usa `window`.
+- O motor nao deve voltar a usar `scrollTop` de `scrollRef` ou containers internos.
+- A posicao acumulada evita perder deltas fracionarios em velocidades baixas.
+- A interacao manual sincroniza a posicao real do usuario antes de retomar o avanco automatico.
+- O debug antigo abaixo fica preservado apenas como historico dos caminhos descartados.
 
 ## Estado atual do codigo
 
 Em `SongDetailScreen`:
 
-- a UI mostra auto-scroll apenas no modal `Controles Rapidos` do modo Play;
-- o controle antigo de velocidade continua removido; a retomada usa presets simples;
-- o modal de velocidade ficou desativado;
-- o container da cifra permanece como `div` DOM real com `overflowY: auto`;
+- a UI mostra auto-scroll no modo Play, com acesso pelo header compacto e pelo modal `Controles Rapidos`;
+- os presets sao `V1` a `V8` em `px/s`;
+- a velocidade personalizada aceita valores locais entre 5 e 150 px/s;
+- a posicao acumulada vive em `autoScrollPositionRef`;
+- eventos humanos pausam temporariamente o avanco, sincronizam refs com `window.scrollY` e depois deixam o rollover continuar da nova posicao;
 - existe comentario apontando para este documento.
 
 ## Proximos caminhos recomendados
 
-1. Criar um componente isolado para a area da cifra com DOM puro, fora de `react-native-web`, e testar scroll manual antes de religar `requestAnimationFrame`.
-2. Testar Android/Capacitor separadamente, porque o comportamento do WebView pode diferir do browser desktop.
+1. Validar periodicamente Android/Capacitor em musicas longas, porque o comportamento do WebView pode diferir do browser desktop.
+2. Manter logs de interacao manual atras de flag local quando for necessario investigar regressao.
 3. Considerar biblioteca especifica de auto-scroll/virtual scroll apenas se ela nao quebrar Vite + Capacitor.
-4. Inspecionar no DevTools qual elemento muda quando o usuario rola manualmente com mouse/toque.
-5. Adicionar um teste manual controlado antes da retomada:
+4. Antes de qualquer refatoracao, confirmar novamente no DevTools qual elemento muda quando o usuario rola manualmente.
+5. Adicionar um teste manual controlado antes de mudancas futuras:
    - clicar um botao interno temporario;
    - confirmar que `scrollTop += 300` move a cifra;
    - so entao religar o loop com `requestAnimationFrame`.

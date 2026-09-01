@@ -32,6 +32,7 @@ export const songStorage = {
       title: input.title.trim(),
       artist: input.artist.trim(),
       content: input.content,
+      youtubeUrl: input.youtubeUrl?.trim() || undefined,
       updatedAt: Date.now(),
     };
     this.saveAll([song, ...songs]);
@@ -48,6 +49,7 @@ export const songStorage = {
         title: input.title.trim(),
         artist: input.artist.trim(),
         content: input.content,
+        youtubeUrl: input.youtubeUrl?.trim() || undefined,
         updatedAt: Date.now(),
       };
       return updatedSong;

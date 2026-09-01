@@ -1,21 +1,38 @@
-import { type CSSProperties, useCallback, useEffect, useRef, useState } from 'react';
-import { FlatList, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native-web';
-import { ChevronLeft, ChevronRight, ListMusic, Menu, Mic, MoreHorizontal, Pause, Pencil, Play, Search, StickyNote, Trash2, Volume2, X } from 'lucide-react';
+import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native-web';
+import { ChevronLeft, ChevronRight, HelpCircle, ListMusic, Menu, Mic, MoreHorizontal, Pause, Pencil, Play, StickyNote, Volume2, X } from 'lucide-react';
 import { AppModal } from '../components/AppModal';
-import { ChordLine } from '../components/ChordLine';
+import { MetronomeIndicators } from './SongDetail/components/MetronomeIndicators';
+import { SongBottomToolbar } from './SongDetail/components/SongBottomToolbar';
+import { CurrentPlaylistModal } from './SongDetail/components/CurrentPlaylistModal';
+import { QuickControlsModal } from './SongDetail/components/QuickControlsModal';
+import { HelpModeOverlay } from './SongDetail/components/HelpModeOverlay';
+import { RecordingMiniPlayer } from './SongDetail/components/RecordingMiniPlayer';
+import { PlayModeHeader } from './SongDetail/components/PlayModeHeader';
+import { PerformanceNote } from './SongDetail/components/PerformanceNote';
+import { YoutubeOptionsModal } from './SongDetail/components/YoutubeOptionsModal';
+import { SongLyricsBlock } from './SongDetail/components/SongLyricsBlock';
+import { SongObservationBlock } from './SongDetail/components/SongObservationBlock';
+import { TomSelectorModal } from './SongDetail/components/TomSelectorModal';
+import { useAddToPlaylist } from './SongDetail/hooks/useAddToPlaylist';
+import { useCurrentPlaylistData } from './SongDetail/hooks/useCurrentPlaylistData';
+import { PlaylistPickerModal } from '../components/modals/PlaylistPickerModal';
 import { useGenreFilter } from '../contexts/GenreFilterContext';
 import { useManualNavigation } from '../contexts/ManualNavigationContext';
 import { usePlayback } from '../contexts/PlaybackContext';
 import { useSettings } from '../contexts/SettingsContext';
+import { useTopBarControls } from '../contexts/TopBarContext';
+import { useKeepAwake } from '../hooks/useKeepAwake';
+import { useStageKeyboardControls } from '../hooks/useStageKeyboardControls';
+import { useDevScreenPerformance } from '../utils/devPerformance';
 import { transposeContent } from '../lib/chords';
 import type { ManualRoute } from '../navigation/manualTypes';
 import { db } from '../services/storage';
-import type { Folder, PerformanceNoteBoxSize, PerformanceNoteColor, PerformanceNotePosition, Playlist, Song } from '../types/models';
-import { detectTomFromContent, formatKeyForSpellingMode, getKeyOptionsForSpellingMode, getTransposeBetweenKeys, type MusicKey } from '../utils/chordKeys';
+import type { PerformanceNoteBoxSize, PerformanceNoteColor, PerformanceNotePosition, Song } from '../types/models';
+import { detectTomFromContent, formatKeyForSpellingMode, getKeyOptionsForSpellingMode, getTransposeBetweenKeys, normalizeMusicKey, type MusicKey } from '../utils/chordKeys';
 import { getSongGenreDisplay, matchesGenreFilter } from '../utils/genres';
 
 const DEFAULT_METRONOME_BPM = 120;
-const SOUND_INDICATOR_COLOR = '#f59e0b';
 const PERFORMANCE_NOTE_INITIAL_POSITION = { x: 18, y: 124 };
 const PERFORMANCE_NOTE_MIN_BOX = { width: 160, height: 110 };
 const PERFORMANCE_NOTE_DEFAULT_BOX = { width: 240, height: 132 };
@@ -42,6 +59,142 @@ const DEFAULT_AUTO_SCROLL_PRESET: AutoScrollPresetValue = 'v4';
 const DEFAULT_CUSTOM_AUTO_SCROLL_SPEED = 35;
 const MIN_CUSTOM_AUTO_SCROLL_SPEED = 5;
 const MAX_CUSTOM_AUTO_SCROLL_SPEED = 150;
+const AUTO_SCROLL_MANUAL_PAUSE_MS = 900;
+const AUTO_SCROLL_MANUAL_RELEASE_SYNC_MS = 150;
+const AUTO_SCROLL_INTERACTION_DEBUG = false;
+
+const YoutubeBadgeIcon = ({ active, size = 22 }: { active: boolean; size?: number }) => (
+  <Play size={size} color={active ? '#fff' : 'var(--app-muted-text)'} fill={active ? '#fff' : 'transparent'} />
+);
+
+const SONG_DETAIL_HELP_ITEMS = {
+  intro: {
+    title: 'Modo ajuda',
+    description: 'Toque nos botoes destacados para entender o que cada um faz. Durante a ajuda, nenhuma acao real e executada.',
+    icon: <HelpCircle size={18} color="var(--app-accent)" />,
+  },
+  help: {
+    title: 'Ajuda da musica',
+    description: 'Ativa uma camada contextual para explorar os controles da cifra sem mudar nada na musica.',
+    icon: <HelpCircle size={18} color="var(--app-accent)" />,
+  },
+  headerMenu: {
+    title: 'Menu lateral',
+    description: 'Abre o menu do aplicativo com musicas, pastas/listas, importacao, backup e configuracoes.',
+    icon: <Menu size={18} color="var(--app-accent)" />,
+  },
+  headerBack: {
+    title: 'Voltar',
+    description: 'Retorna para a tela anterior mantendo o contexto de navegacao.',
+    icon: <ChevronLeft size={18} color="var(--app-accent)" />,
+  },
+  headerControls: {
+    title: 'Mostrar/Ocultar barra',
+    description: 'Mostra ou esconde os controles inferiores para deixar a cifra mais limpa.',
+    icon: <Text style={{ color: 'var(--app-accent)', fontWeight: '900', fontSize: 13 }}>Olho</Text>,
+  },
+  play: {
+    title: 'Modo Play',
+    description: 'Abre a visualizacao de apresentacao, com cifra em foco, header compacto, swipe de lista e auto-scroll.',
+    icon: <Play size={18} color="var(--app-accent)" />,
+  },
+  audio: {
+    title: 'Gravacao de referencia',
+    description: 'Toca ou pausa o audio salvo nesta musica para lembrar entrada, melodia, ritmo ou conducao.',
+    icon: <Mic size={18} color="var(--app-accent)" />,
+  },
+  audioPlayer: {
+    title: 'Mini player',
+    description: 'Controla a gravacao de referencia, mostrando tempo, progresso e atalhos de reproducao.',
+    icon: <Pause size={18} color="var(--app-accent)" />,
+  },
+  fontDown: {
+    title: 'Diminuir fonte',
+    description: 'Reduz o tamanho da cifra para caber mais conteudo na tela.',
+    icon: <Text style={{ color: 'var(--app-accent)', fontWeight: '900', fontSize: 13 }}>A-</Text>,
+  },
+  fontUp: {
+    title: 'Aumentar fonte',
+    description: 'Aumenta o tamanho da cifra para melhorar a leitura no ensaio ou no palco.',
+    icon: <Text style={{ color: 'var(--app-accent)', fontWeight: '900', fontSize: 13 }}>A+</Text>,
+  },
+  key: {
+    title: 'Tom atual',
+    description: 'Abre a selecao de tom para transpor a cifra visualmente.',
+    icon: <Text style={{ color: 'var(--app-accent)', fontWeight: '900', fontSize: 13 }}>Tom</Text>,
+  },
+  addToPlaylist: {
+    title: 'Adicionar a lista',
+    description: 'Envia a musica atual para uma lista existente, sem duplicar quando ela ja estiver no repertorio.',
+    icon: <ListMusic size={18} color="var(--app-accent)" />,
+  },
+  youtube: {
+    title: 'Link do YouTube',
+    description: 'Abre opcoes do YouTube da musica: abrir no YouTube, copiar o link ou usar player interno quando disponivel.',
+    icon: <YoutubeBadgeIcon active size={18} />,
+  },
+  postIt: {
+    title: 'Post-it musical',
+    description: 'Abre uma anotacao flutuante com autosave para lembretes de entrada, pausas, solos ou combinados.',
+    icon: <StickyNote size={18} color="var(--app-accent)" />,
+  },
+  edit: {
+    title: 'Editar musica',
+    description: 'Abre o editor para alterar titulo, artista, cifra, generos, metronomo, fonte e gravacao.',
+    icon: <Pencil size={18} color="var(--app-accent)" />,
+  },
+  quickControls: {
+    title: 'Controles Rapidos',
+    description: 'Reune navegacao, lista atual, exibicao e auto-scroll durante o modo Play.',
+    icon: <Menu size={18} color="var(--app-accent)" />,
+  },
+  autoScroll: {
+    title: 'Auto-scroll',
+    description: 'Rola a cifra automaticamente no modo Play usando a velocidade selecionada. O gesto manual continua sendo respeitado.',
+    icon: <Play size={18} color="var(--app-accent)" />,
+  },
+  exitPlay: {
+    title: 'Sair do Play',
+    description: 'Fecha o modo de apresentacao e volta para a tela normal da musica.',
+    icon: <X size={18} color="var(--app-accent)" />,
+  },
+  swipe: {
+    title: 'Swipe da lista',
+    description: 'Quando a musica vem de uma lista, deslize horizontalmente para navegar para anterior ou proxima.',
+    icon: <ChevronRight size={18} color="var(--app-accent)" />,
+  },
+  metronomeVisual: {
+    title: 'Pulso visual',
+    description: 'Liga ou desliga o indicador visual do metronomo configurado para esta musica.',
+    icon: <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: 'var(--app-accent)' }} />,
+  },
+  metronomeSound: {
+    title: 'Beep sonoro',
+    description: 'Liga ou desliga o som do metronomo. O audio pode depender de uma interacao do usuario.',
+    icon: <Volume2 size={18} color="var(--app-accent)" />,
+  },
+  noteMenu: {
+    title: 'Opcoes do post-it',
+    description: 'Permite trocar a cor ou excluir a anotacao musical salva para esta musica.',
+    icon: <MoreHorizontal size={18} color="var(--app-accent)" />,
+  },
+  noteHide: {
+    title: 'Ocultar post-it',
+    description: 'Esconde o post-it sem apagar o texto salvo.',
+    icon: <X size={18} color="var(--app-accent)" />,
+  },
+  noteDrag: {
+    title: 'Mover post-it',
+    description: 'Arraste o topo do post-it para reposicionar a anotacao na tela.',
+    icon: <StickyNote size={18} color="var(--app-accent)" />,
+  },
+  noteResize: {
+    title: 'Redimensionar post-it',
+    description: 'Use a alca inferior para ajustar o tamanho da anotacao.',
+    icon: <StickyNote size={18} color="var(--app-accent)" />,
+  },
+} as const;
+type SongDetailHelpTarget = keyof typeof SONG_DETAIL_HELP_ITEMS;
 const PERFORMANCE_NOTE_COLORS: Record<PerformanceNoteColor, { label: string; background: string; border: string; text: string; accent: string }> = {
   yellow: { label: 'Amarelo', background: 'linear-gradient(145deg, #fff2a8 0%, #ffe17a 100%)', border: 'rgba(120, 82, 12, 0.28)', text: '#3d2a03', accent: '#5f4300' },
   green: { label: 'Verde', background: 'linear-gradient(145deg, #dcfce7 0%, #a7f3d0 100%)', border: 'rgba(21, 128, 61, 0.26)', text: '#06391d', accent: '#166534' },
@@ -89,14 +242,6 @@ const getAutoScrollPresetLabel = (preset: AutoScrollPreset, customSpeed: number)
 const getAudioNoteDataUrl = (base64?: string, mimeType?: string) =>
   base64 && mimeType ? `data:${mimeType};base64,${base64}` : '';
 
-const formatAudioTime = (seconds: number): string => {
-  if (!Number.isFinite(seconds) || seconds <= 0) return '0:00';
-  const totalSeconds = Math.floor(seconds);
-  const minutes = Math.floor(totalSeconds / 60);
-  const remainingSeconds = totalSeconds % 60;
-  return `${minutes}:${String(remainingSeconds).padStart(2, '0')}`;
-};
-
 interface SongDetailScreenProps {
   id: string;
   returnTo?: ManualRoute;
@@ -114,23 +259,22 @@ export function SongDetailScreen({
   controlsVisible,
   styles,
 }: SongDetailScreenProps) {
+  useDevScreenPerformance('SongDetail');
   const nav = useManualNavigation();
   const { globalFilters } = useGenreFilter();
   const { isPlaying, startPlaying, stopPlaying } = usePlayback();
-  const { displaySettings: settings } = useSettings();
+  const { displaySettings: settings, favoriteMode } = useSettings();
+  const { setTopBarControls, clearTopBarControls } = useTopBarControls();
+  useKeepAwake(true);
   const [song, setSong] = useState<Song | null>(null);
   const [allSongs, setAllSongs] = useState<Song[]>([]);
-  const [sourcePlaylistSongs, setSourcePlaylistSongs] = useState<Song[]>([]);
   const [filteredSongs, setFilteredSongs] = useState<Song[]>([]);
-  const [currentSongIndex, setCurrentSongIndex] = useState(0);
   const [controlsModalOpen, setControlsModalOpen] = useState(false);
   const [listModalOpen, setListModalOpen] = useState(false);
-  const [addToPlaylistOpen, setAddToPlaylistOpen] = useState(false);
-  const [addToPlaylistSearch, setAddToPlaylistSearch] = useState('');
-  const [addToPlaylistPlaylists, setAddToPlaylistPlaylists] = useState<Playlist[]>([]);
-  const [addToPlaylistFolders, setAddToPlaylistFolders] = useState<Folder[]>([]);
-  const [addingToPlaylistId, setAddingToPlaylistId] = useState<string | null>(null);
-  const [removingFromPlaylistId, setRemovingFromPlaylistId] = useState<string | null>(null);
+  const [helpMode, setHelpMode] = useState(false);
+  const [activeHelpTarget, setActiveHelpTarget] = useState<SongDetailHelpTarget | null>(null);
+  const [youtubeModalOpen, setYoutubeModalOpen] = useState(false);
+  const [youtubeLinkCopied, setYoutubeLinkCopied] = useState(false);
   const [fontSize, setFontSize] = useState(17);
   const [tomOpen, setTomOpen] = useState(false);
   const [baseTom, setBaseTom] = useState<MusicKey>('C');
@@ -206,8 +350,84 @@ export function SongDetailScreen({
   const autoScrollPositionRef = useRef(0);
   const autoScrollProgrammaticRef = useRef(false);
   const autoScrollSpeedRef = useRef<number>(AUTO_SCROLL_PRESET_OPTIONS[3].speed);
+  const autoScrollManualPauseUntilRef = useRef(0);
+  const autoScrollManualPauseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autoScrollManualReleaseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autoScrollUserInteractingRef = useRef(false);
   const chordSpellingMode = settings.chordSpellingMode ?? 'mixed';
   const keyOptions = getKeyOptionsForSpellingMode(chordSpellingMode);
+  const activeHelpItem = activeHelpTarget ? SONG_DETAIL_HELP_ITEMS[activeHelpTarget] : null;
+  const addToPlaylist = useAddToPlaylist({ song, favoriteMode });
+  const {
+    currentSongList,
+    currentListName,
+    currentSongIndex,
+    previousPlaylistIndex,
+    nextPlaylistIndex,
+    previousPlaylistSong,
+    nextPlaylistSong,
+    previousDisabled,
+    nextDisabled,
+  } = useCurrentPlaylistData({
+    id,
+    allSongs,
+    filteredSongs,
+    sourcePlaylistId,
+    sourcePlaylistName,
+  });
+
+  const showHelp = useCallback((target: SongDetailHelpTarget) => {
+    setActiveHelpTarget(target);
+  }, []);
+
+  const enterHelpMode = useCallback(() => {
+    setControlsModalOpen(false);
+    setListModalOpen(false);
+    addToPlaylist.closeModal();
+    setYoutubeModalOpen(false);
+    setTomOpen(false);
+    setCustomAutoScrollOpen(false);
+    setNoteMenuOpen(false);
+    setHelpMode(true);
+    setActiveHelpTarget('intro');
+  }, [addToPlaylist.closeModal]);
+
+  const exitHelpMode = useCallback(() => {
+    setHelpMode(false);
+    setActiveHelpTarget(null);
+  }, []);
+
+  const runOrExplain = useCallback((target: SongDetailHelpTarget, action: () => void) => {
+    if (helpMode) {
+      showHelp(target);
+      return;
+    }
+    action();
+  }, [helpMode, showHelp]);
+
+  const getHelpHighlightStyle = (target: SongDetailHelpTarget) => {
+    if (!helpMode) return null;
+    return activeHelpTarget === target ? helpStyles.helpableActive : helpStyles.helpable;
+  };
+
+  const getHelpDomHighlightStyle = (target: SongDetailHelpTarget): CSSProperties | undefined => {
+    if (!helpMode) return undefined;
+    return activeHelpTarget === target ? helpDomStyles.helpableActive : helpDomStyles.helpable;
+  };
+
+  useEffect(() => {
+    setTopBarControls({
+      headerTitle: song?.title || 'Música',
+      headerSubtitle: song?.artist || undefined,
+      songDetailHelp: {
+        active: helpMode,
+        onToggle: helpMode ? exitHelpMode : enterHelpMode,
+        onExplain: showHelp,
+      },
+    });
+
+    return clearTopBarControls;
+  }, [clearTopBarControls, enterHelpMode, exitHelpMode, helpMode, setTopBarControls, showHelp, song?.artist, song?.title]);
 
   const getScrollNode = () => {
     const target = scrollRef.current;
@@ -333,13 +553,40 @@ export function SongDetailScreen({
       cancelAnimationFrame(autoScrollFrameRef.current);
       autoScrollFrameRef.current = null;
     }
+    if (autoScrollManualPauseTimerRef.current) {
+      clearTimeout(autoScrollManualPauseTimerRef.current);
+      autoScrollManualPauseTimerRef.current = null;
+    }
+    if (autoScrollManualReleaseTimerRef.current) {
+      clearTimeout(autoScrollManualReleaseTimerRef.current);
+      autoScrollManualReleaseTimerRef.current = null;
+    }
     autoScrollLastTimestampRef.current = null;
+    autoScrollManualPauseUntilRef.current = 0;
+    autoScrollUserInteractingRef.current = false;
     setAutoScrollEnabled(false);
   }, []);
 
   const runAutoScrollFrame = useCallback((timestamp: number) => {
     if (!autoScrollEnabledRef.current || !isPlaying || typeof window === 'undefined') {
       stopAutoScroll();
+      return;
+    }
+
+    const now = typeof performance !== 'undefined' ? performance.now() : timestamp;
+    if (autoScrollUserInteractingRef.current || now < autoScrollManualPauseUntilRef.current) {
+      autoScrollPositionRef.current = window.scrollY;
+      scrollPosRef.current = window.scrollY;
+      autoScrollLastTimestampRef.current = null;
+      if (AUTO_SCROLL_INTERACTION_DEBUG) {
+        console.log('[auto-scroll-manual-skip]', {
+          scrollY: window.scrollY,
+          position: autoScrollPositionRef.current,
+          userInteracting: autoScrollUserInteractingRef.current,
+          pauseUntil: autoScrollManualPauseUntilRef.current,
+        });
+      }
+      autoScrollFrameRef.current = requestAnimationFrame(runAutoScrollFrame);
       return;
     }
 
@@ -407,11 +654,80 @@ export function SongDetailScreen({
     return !!target.closest('button, [role="button"], textarea, input, select, a, [data-swipe-ignore="true"]');
   }, []);
 
-  const stopAutoScrollFromManualInteraction = useCallback((event: Event) => {
+  const syncAutoScrollToWindowPosition = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    autoScrollPositionRef.current = window.scrollY;
+    scrollPosRef.current = window.scrollY;
+    autoScrollLastTimestampRef.current = null;
+  }, []);
+
+  const extendManualAutoScrollPause = useCallback(() => {
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    autoScrollManualPauseUntilRef.current = now + AUTO_SCROLL_MANUAL_PAUSE_MS;
+
+    if (autoScrollManualPauseTimerRef.current) {
+      clearTimeout(autoScrollManualPauseTimerRef.current);
+    }
+    autoScrollManualPauseTimerRef.current = setTimeout(() => {
+      autoScrollManualPauseTimerRef.current = null;
+      syncAutoScrollToWindowPosition();
+    }, AUTO_SCROLL_MANUAL_PAUSE_MS);
+  }, [syncAutoScrollToWindowPosition]);
+
+  const beginManualAutoScrollInteraction = useCallback((event: Event) => {
+    if (!autoScrollEnabledRef.current) return;
+    if (shouldIgnoreAutoScrollInteraction(event.target)) return;
+    autoScrollUserInteractingRef.current = true;
+    extendManualAutoScrollPause();
+    syncAutoScrollToWindowPosition();
+    if (AUTO_SCROLL_INTERACTION_DEBUG && typeof window !== 'undefined') {
+      console.log('[auto-scroll-manual-begin]', {
+        type: event.type,
+        scrollY: window.scrollY,
+        position: autoScrollPositionRef.current,
+        lastTimestamp: autoScrollLastTimestampRef.current,
+        pauseUntil: autoScrollManualPauseUntilRef.current,
+      });
+    }
+  }, [extendManualAutoScrollPause, shouldIgnoreAutoScrollInteraction, syncAutoScrollToWindowPosition]);
+
+  const finishManualAutoScrollInteraction = useCallback((event: Event) => {
+    if (!autoScrollEnabledRef.current) return;
+    if (shouldIgnoreAutoScrollInteraction(event.target)) return;
+    extendManualAutoScrollPause();
+
+    if (autoScrollManualReleaseTimerRef.current) {
+      clearTimeout(autoScrollManualReleaseTimerRef.current);
+    }
+    autoScrollManualReleaseTimerRef.current = setTimeout(() => {
+      autoScrollManualReleaseTimerRef.current = null;
+      syncAutoScrollToWindowPosition();
+      autoScrollUserInteractingRef.current = false;
+      extendManualAutoScrollPause();
+      if (AUTO_SCROLL_INTERACTION_DEBUG && typeof window !== 'undefined') {
+        console.log('[auto-scroll-manual-finish]', {
+          type: event.type,
+          scrollY: window.scrollY,
+          position: autoScrollPositionRef.current,
+          lastTimestamp: autoScrollLastTimestampRef.current,
+          pauseUntil: autoScrollManualPauseUntilRef.current,
+        });
+      }
+    }, AUTO_SCROLL_MANUAL_RELEASE_SYNC_MS);
+  }, [extendManualAutoScrollPause, shouldIgnoreAutoScrollInteraction, syncAutoScrollToWindowPosition]);
+
+  const syncAutoScrollFromScrollEvent = useCallback((event: Event) => {
     if (!autoScrollEnabledRef.current || autoScrollProgrammaticRef.current) return;
     if (shouldIgnoreAutoScrollInteraction(event.target)) return;
-    stopAutoScroll();
-  }, [shouldIgnoreAutoScrollInteraction, stopAutoScroll]);
+    syncAutoScrollToWindowPosition();
+    if (AUTO_SCROLL_INTERACTION_DEBUG && typeof window !== 'undefined') {
+      console.log('[auto-scroll-manual-scroll]', {
+        scrollY: window.scrollY,
+        position: autoScrollPositionRef.current,
+        lastTimestamp: autoScrollLastTimestampRef.current,
+      });
+    }
+  }, [shouldIgnoreAutoScrollInteraction, syncAutoScrollToWindowPosition]);
 
   useEffect(() => {
     autoScrollSpeedRef.current = getAutoScrollPresetSpeed(autoScrollPreset, customAutoScrollSpeed);
@@ -424,18 +740,28 @@ export function SongDetailScreen({
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
     const options: AddEventListenerOptions = { passive: true };
-    window.addEventListener('wheel', stopAutoScrollFromManualInteraction, options);
-    window.addEventListener('touchstart', stopAutoScrollFromManualInteraction, options);
-    window.addEventListener('touchmove', stopAutoScrollFromManualInteraction, options);
-    window.addEventListener('pointerdown', stopAutoScrollFromManualInteraction, options);
+    window.addEventListener('wheel', beginManualAutoScrollInteraction, options);
+    window.addEventListener('touchstart', beginManualAutoScrollInteraction, options);
+    window.addEventListener('touchmove', beginManualAutoScrollInteraction, options);
+    window.addEventListener('touchend', finishManualAutoScrollInteraction, options);
+    window.addEventListener('touchcancel', finishManualAutoScrollInteraction, options);
+    window.addEventListener('pointerdown', beginManualAutoScrollInteraction, options);
+    window.addEventListener('pointerup', finishManualAutoScrollInteraction, options);
+    window.addEventListener('pointercancel', finishManualAutoScrollInteraction, options);
+    window.addEventListener('scroll', syncAutoScrollFromScrollEvent, options);
 
     return () => {
-      window.removeEventListener('wheel', stopAutoScrollFromManualInteraction);
-      window.removeEventListener('touchstart', stopAutoScrollFromManualInteraction);
-      window.removeEventListener('touchmove', stopAutoScrollFromManualInteraction);
-      window.removeEventListener('pointerdown', stopAutoScrollFromManualInteraction);
+      window.removeEventListener('wheel', beginManualAutoScrollInteraction);
+      window.removeEventListener('touchstart', beginManualAutoScrollInteraction);
+      window.removeEventListener('touchmove', beginManualAutoScrollInteraction);
+      window.removeEventListener('touchend', finishManualAutoScrollInteraction);
+      window.removeEventListener('touchcancel', finishManualAutoScrollInteraction);
+      window.removeEventListener('pointerdown', beginManualAutoScrollInteraction);
+      window.removeEventListener('pointerup', finishManualAutoScrollInteraction);
+      window.removeEventListener('pointercancel', finishManualAutoScrollInteraction);
+      window.removeEventListener('scroll', syncAutoScrollFromScrollEvent);
     };
-  }, [stopAutoScrollFromManualInteraction]);
+  }, [beginManualAutoScrollInteraction, finishManualAutoScrollInteraction, syncAutoScrollFromScrollEvent]);
 
   useEffect(() => {
     stopAutoScroll();
@@ -638,31 +964,6 @@ export function SongDetailScreen({
   }, [allSongs, globalFilters]);
 
   useEffect(() => {
-    if (sourcePlaylistId) {
-      db.byPlaylist(sourcePlaylistId).then((playlist) => {
-        if (!playlist) {
-          setSourcePlaylistSongs([]);
-          return;
-        }
-        const byId = new Map(allSongs.map((item) => [item.id, item]));
-        setSourcePlaylistSongs(
-          playlist.songIds
-            .map((songId) => byId.get(songId))
-            .filter((item): item is Song => !!item)
-        );
-      });
-    } else {
-      setSourcePlaylistSongs([]);
-    }
-  }, [sourcePlaylistId, allSongs]);
-
-  useEffect(() => {
-    const list = sourcePlaylistId && sourcePlaylistSongs.length > 0 ? sourcePlaylistSongs : filteredSongs;
-    const index = list.findIndex((item) => item.id === id);
-    setCurrentSongIndex(index >= 0 ? index : 0);
-  }, [filteredSongs, sourcePlaylistSongs, sourcePlaylistId, id]);
-
-  useEffect(() => {
     if (!song) return;
     setFontSize(song.preferredFontSize ?? 17);
   }, [song?.id, song?.preferredFontSize]);
@@ -738,11 +1039,12 @@ export function SongDetailScreen({
   }, [clearNoteAutosaveTimer, flushPerformanceNoteAutosave]);
 
   useEffect(() => {
-    if (!song?.content) return;
-    const detected = detectTomFromContent(song.content, chordSpellingMode);
+    if (!song) return;
+    const detected = detectTomFromContent(song.content || '', chordSpellingMode);
+    const preferred = normalizeMusicKey(song.preferredKey, chordSpellingMode);
     setBaseTom(detected);
-    setSelectedTom(detected);
-  }, [song?.id, song?.content]);
+    setSelectedTom(preferred ?? detected);
+  }, [song?.id, song?.content, song?.preferredKey]);
 
   useEffect(() => {
     setBaseTom((current) => formatKeyForSpellingMode(current, chordSpellingMode));
@@ -791,26 +1093,122 @@ export function SongDetailScreen({
     flushPerformanceNoteAutosave,
   ]);
 
-  if (!song) return null;
+  const navigateToIndex = useCallback((index: number) => {
+    if (index < 0 || index >= currentSongList.length) return;
+    const nextSong = currentSongList[index];
+    setControlsModalOpen(false);
+    setListModalOpen(false);
+    nav.replace('SongDetail', {
+      id: nextSong.id,
+      returnTo,
+      sourcePlaylistId,
+      sourcePlaylistName,
+    });
+  }, [currentSongList, nav, returnTo, sourcePlaylistId, sourcePlaylistName]);
+
+  const toggleStageAutoScroll = useCallback(() => {
+    if (autoScrollEnabled) {
+      stopAutoScroll();
+      return;
+    }
+    startAutoScroll();
+  }, [autoScrollEnabled, startAutoScroll, stopAutoScroll]);
+
+  const navigateToNextStageSong = useCallback(() => {
+    if (!nextDisabled) navigateToIndex(nextPlaylistIndex);
+  }, [navigateToIndex, nextDisabled, nextPlaylistIndex]);
+
+  const navigateToPreviousStageSong = useCallback(() => {
+    if (!previousDisabled) navigateToIndex(previousPlaylistIndex);
+  }, [navigateToIndex, previousDisabled, previousPlaylistIndex]);
+
+  const closeStageKeyboardOverlay = useCallback(() => {
+    if (helpMode) {
+      exitHelpMode();
+      return;
+    }
+    if (customAutoScrollOpen) {
+      setCustomAutoScrollOpen(false);
+      return;
+    }
+    if (controlsModalOpen) {
+      setControlsModalOpen(false);
+      return;
+    }
+    if (listModalOpen) {
+      setListModalOpen(false);
+      return;
+    }
+    if (addToPlaylist.open) {
+      addToPlaylist.closeModal();
+      return;
+    }
+    if (youtubeModalOpen) {
+      setYoutubeModalOpen(false);
+      setYoutubeLinkCopied(false);
+      return;
+    }
+    if (tomOpen) {
+      setTomOpen(false);
+      return;
+    }
+    if (noteMenuOpen) {
+      setNoteMenuOpen(false);
+      return;
+    }
+    stopPlaying();
+  }, [
+    addToPlaylist.closeModal,
+    addToPlaylist.open,
+    controlsModalOpen,
+    customAutoScrollOpen,
+    exitHelpMode,
+    helpMode,
+    listModalOpen,
+    noteMenuOpen,
+    stopPlaying,
+    tomOpen,
+    youtubeModalOpen,
+  ]);
+
+  const stageKeyboardOverlayOpen =
+    helpMode ||
+    controlsModalOpen ||
+    listModalOpen ||
+    addToPlaylist.open ||
+    youtubeModalOpen ||
+    tomOpen ||
+    customAutoScrollOpen ||
+    noteMenuOpen;
+
+  useStageKeyboardControls({
+    enabled: true,
+    isPlaying,
+    overlayOpen: stageKeyboardOverlayOpen,
+    canGoNext: !!sourcePlaylistId && !nextDisabled,
+    canGoPrevious: !!sourcePlaylistId && !previousDisabled,
+    onToggleAutoScroll: toggleStageAutoScroll,
+    onNextSong: navigateToNextStageSong,
+    onPreviousSong: navigateToPreviousStageSong,
+    onEscape: closeStageKeyboardOverlay,
+  });
 
   const transpose = getTransposeBetweenKeys(baseTom, selectedTom);
-  const text = transposeContent(song.content, transpose, chordSpellingMode);
-  const currentSongList = sourcePlaylistId && sourcePlaylistSongs.length > 0 ? sourcePlaylistSongs : filteredSongs;
-  const currentListName = sourcePlaylistId && sourcePlaylistName ? sourcePlaylistName : 'Lista Atual';
+  const text = useMemo(
+    () => (song ? transposeContent(song.content, transpose, chordSpellingMode) : ''),
+    [chordSpellingMode, song?.content, transpose]
+  );
+
+  if (!song) return null;
   const playlistSwipeEnabled = isPlaying && !!sourcePlaylistId && currentSongList.length > 1;
   const showPlaylistControls = playlistSwipeEnabled && playlistControlsVisible;
-  const previousPlaylistIndex = currentSongIndex - 1;
-  const nextPlaylistIndex = currentSongIndex + 1;
-  const previousPlaylistSong = sourcePlaylistId ? currentSongList[previousPlaylistIndex] : undefined;
-  const nextPlaylistSong = sourcePlaylistId ? currentSongList[nextPlaylistIndex] : undefined;
-  const previousDisabled = currentSongIndex <= 0;
-  const nextDisabled = currentSongIndex >= currentSongList.length - 1;
   const noteOverlayTop = isPlaying ? NOTE_OVERLAY_PLAY_TOP : NOTE_OVERLAY_TOP;
   const noteOverlayBottom = isPlaying
     ? showPlaylistControls ? NOTE_OVERLAY_PLAYLIST_BOTTOM : NOTE_OVERLAY_BOTTOM
     : controlsVisible ? NOTE_OVERLAY_CONTROLS_BOTTOM : NOTE_OVERLAY_BOTTOM;
   const hasAudioNote = !!song.audioNoteBase64 && !!song.audioNoteMimeType;
   const hasPerformanceNoteDraft = noteDraft.trim().length > 0 || !!song.performanceNote?.trim();
+  const songGenreDisplay = getSongGenreDisplay(song);
   const audioNoteSafeDuration = audioNoteDuration > 0 ? audioNoteDuration : 0;
   const audioNoteProgress = audioNoteSafeDuration > 0
     ? Math.min(100, Math.max(0, (audioNoteCurrentTime / audioNoteSafeDuration) * 100))
@@ -833,96 +1231,45 @@ export function SongDetailScreen({
     WebkitOverflowScrolling: 'touch',
   };
 
-  const openAddToPlaylistModal = async () => {
-    if (!song) return;
-    setAddToPlaylistSearch('');
-    setAddToPlaylistOpen(true);
-    const [playlists, folders] = await Promise.all([db.getPlaylists(), db.getFolders()]);
-    setAddToPlaylistPlaylists(playlists);
-    setAddToPlaylistFolders(folders);
+  const openYoutubeModal = () => {
+    if (!song?.youtubeUrl?.trim()) return;
+    setYoutubeLinkCopied(false);
+    setYoutubeModalOpen(true);
   };
 
-  const closeAddToPlaylistModal = () => {
-    setAddToPlaylistOpen(false);
-    setAddToPlaylistSearch('');
-    setAddingToPlaylistId(null);
-    setRemovingFromPlaylistId(null);
+  const closeYoutubeModal = () => {
+    setYoutubeModalOpen(false);
+    setYoutubeLinkCopied(false);
   };
 
-  const getPlaylistFolderPath = (folderId?: string | null) => {
-    if (!folderId) return '';
-    const byId = new Map(addToPlaylistFolders.map((folder) => [folder.id, folder]));
-    const names: string[] = [];
-    const visited = new Set<string>();
-    let current = byId.get(folderId);
-    while (current && !visited.has(current.id)) {
-      visited.add(current.id);
-      names.unshift(current.name);
-      current = current.parentId ? byId.get(current.parentId) : undefined;
+  const openYoutubeLink = () => {
+    const url = song?.youtubeUrl?.trim();
+    if (!url) return;
+    const opened = window.open(url, '_blank', 'noopener,noreferrer');
+    if (!opened) window.location.href = url;
+  };
+
+  const copyYoutubeLink = async () => {
+    const url = song?.youtubeUrl?.trim();
+    if (!url) return;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(url);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = url;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+      }
+      setYoutubeLinkCopied(true);
+    } catch {
+      setYoutubeLinkCopied(false);
     }
-    return names.join(' / ');
-  };
-
-  const getPlaylistSongCountLabel = (playlist: Playlist) => {
-    const count = playlist.songIds?.length ?? 0;
-    return `${count} ${count === 1 ? 'música' : 'músicas'}`;
-  };
-
-  const getAddToPlaylistSubtitle = (playlist: Playlist) => {
-    const path = getPlaylistFolderPath(playlist.folderId);
-    return `${path ? `Lista em ${path}` : 'Lista na raiz'} · ${getPlaylistSongCountLabel(playlist)}`;
-  };
-
-  const playlistAlreadyHasSong = (playlist: Playlist) =>
-    !!song && (playlist.songIds ?? []).includes(song.id);
-
-  const addCurrentSongToPlaylist = async (playlist: Playlist) => {
-    if (!song || playlistAlreadyHasSong(playlist) || addingToPlaylistId || removingFromPlaylistId) return;
-    setAddingToPlaylistId(playlist.id);
-    await db.addSongToPlaylist(playlist.id, song.id);
-    setAddToPlaylistPlaylists((current) =>
-      current.map((item) =>
-        item.id === playlist.id
-          ? { ...item, songIds: (item.songIds ?? []).includes(song.id) ? item.songIds : [...(item.songIds ?? []), song.id] }
-          : item
-      )
-    );
-    setAddingToPlaylistId(null);
-  };
-
-  const removeCurrentSongFromPlaylist = async (playlist: Playlist) => {
-    if (!song || !playlistAlreadyHasSong(playlist) || addingToPlaylistId || removingFromPlaylistId) return;
-    setRemovingFromPlaylistId(playlist.id);
-    await db.removeSongFromPlaylist(playlist.id, song.id);
-    setAddToPlaylistPlaylists((current) =>
-      current.map((item) =>
-        item.id === playlist.id
-          ? { ...item, songIds: (item.songIds ?? []).filter((songId) => songId !== song.id) }
-          : item
-      )
-    );
-    setRemovingFromPlaylistId(null);
-  };
-
-  const normalizedAddToPlaylistSearch = addToPlaylistSearch.trim().toLowerCase();
-  const visibleAddToPlaylistOptions = [...addToPlaylistPlaylists]
-    .sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'))
-    .filter((playlist) => {
-      if (!normalizedAddToPlaylistSearch) return true;
-      return `${playlist.name} ${getPlaylistFolderPath(playlist.folderId)}`.toLowerCase().includes(normalizedAddToPlaylistSearch);
-    });
-
-  const navigateToIndex = (index: number) => {
-    if (index < 0 || index >= currentSongList.length) return;
-    const nextSong = currentSongList[index];
-    setControlsModalOpen(false);
-    setListModalOpen(false);
-    nav.replace('SongDetail', {
-      id: nextSong.id,
-      returnTo,
-      sourcePlaylistId,
-      sourcePlaylistName,
-    });
   };
 
   const shouldIgnorePlaylistSwipeTarget = (target: EventTarget | null) => {
@@ -931,6 +1278,10 @@ export function SongDetailScreen({
   };
 
   const beginPlaylistSwipe = (clientX: number, clientY: number, pointerId: number, target: EventTarget | null) => {
+    if (helpMode) {
+      if (playlistSwipeEnabled) showHelp('swipe');
+      return;
+    }
     if (!playlistSwipeEnabled || noteDragRef.current.active || noteResizeRef.current.active) return;
     if (shouldIgnorePlaylistSwipeTarget(target)) return;
     playlistSwipeRef.current = {
@@ -1029,6 +1380,16 @@ export function SongDetailScreen({
     await db.updateSong(song.id, { preferredFontSize: next });
   };
 
+  const selectTom = (key: MusicKey) => {
+    setSelectedTom(key);
+    setTomOpen(false);
+    setSong((current) => (current && current.id === song.id ? { ...current, preferredKey: key } : current));
+    void db.updateSong(song.id, { preferredKey: key }).then((updated) => {
+      if (!updated) return;
+      setSong((current) => (current && current.id === updated.id ? updated : current));
+    });
+  };
+
   const clampNotePosition = (x: number, y: number) => {
     if (typeof window === 'undefined') {
       return { x: Math.max(8, x), y: Math.max(8, y) };
@@ -1107,6 +1468,12 @@ export function SongDetailScreen({
   };
 
   const startNoteDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (helpMode) {
+      event.preventDefault();
+      event.stopPropagation();
+      showHelp('noteDrag');
+      return;
+    }
     event.preventDefault();
     event.currentTarget.setPointerCapture?.(event.pointerId);
     noteDragRef.current = {
@@ -1168,6 +1535,12 @@ export function SongDetailScreen({
   };
 
   const startNoteResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (helpMode) {
+      event.preventDefault();
+      event.stopPropagation();
+      showHelp('noteResize');
+      return;
+    }
     event.preventDefault();
     event.stopPropagation();
     event.currentTarget.setPointerCapture?.(event.pointerId);
@@ -1220,142 +1593,82 @@ export function SongDetailScreen({
     });
   };
 
-  const renderMetronomeIndicators = () => (
-    <View style={metronomeStyles.indicatorRow}>
-      <TouchableOpacity
-        accessibilityRole="button"
-        accessibilityLabel="Alternar metrônomo visual"
-        onPress={toggleMetronomeVisual}
-        style={[
-          metronomeStyles.indicator,
-          metronomeVisualOn ? metronomeStyles.visualIndicatorActive : metronomeStyles.indicatorDisabled,
-          metronomeVisualOn && metronomePulse === 1 ? metronomeStyles.indicatorPulse : null,
-          metronomeVisualOn && metronomePulse === 2 ? metronomeStyles.indicatorStrongPulse : null,
-        ]}
-      >
-        <View style={metronomeStyles.innerMark} />
-      </TouchableOpacity>
-      <TouchableOpacity
-        accessibilityRole="button"
-        accessibilityLabel="Alternar beep sonoro"
-        onPress={toggleMetronomeSound}
-        style={[
-          metronomeStyles.indicator,
-          metronomeSoundOn ? metronomeStyles.soundIndicatorActive : metronomeStyles.indicatorDisabled,
-          metronomeSoundOn && metronomePulse === 2 ? metronomeStyles.soundStrongPulse : null,
-        ]}
-      >
-        <Volume2 size={13} color={metronomeSoundOn ? '#051014' : 'var(--app-muted-text)'} />
-      </TouchableOpacity>
-    </View>
+  const renderAudioNotePlayer = (variant: 'fixed' | 'inline') => (
+    <RecordingMiniPlayer
+      variant={variant}
+      controlsVisible={controlsVisible}
+      playing={audioNotePlaying}
+      currentTime={audioNoteCurrentTime}
+      duration={audioNoteSafeDuration}
+      progress={audioNoteProgress}
+      playerHighlightStyle={getHelpDomHighlightStyle('audioPlayer')}
+      audioHighlightStyle={getHelpDomHighlightStyle('audio')}
+      onToggle={() => runOrExplain('audio', toggleAudioNote)}
+      onSeekPointerDown={() => {
+        if (helpMode) showHelp('audioPlayer');
+      }}
+      onSeek={(value) => {
+        if (helpMode) {
+          showHelp('audioPlayer');
+          return;
+        }
+        seekAudioNote(value);
+      }}
+      onClose={() => runOrExplain('audioPlayer', closeAudioNotePlayer)}
+    />
   );
-
-  const renderAudioNotePlayer = (variant: 'fixed' | 'inline') => {
-    const isInline = variant === 'inline';
-
-    return (
-      <div
-        style={isInline ? audioNotePlayerStyles.inlineRoot : getAudioNotePlayerStyle(controlsVisible)}
-        data-swipe-ignore="true"
-      >
-        <button
-          type="button"
-          aria-label={audioNotePlaying ? 'Pausar gravação de referência' : 'Tocar gravação de referência'}
-          style={audioNotePlayerStyles.iconButton}
-          onClick={toggleAudioNote}
-        >
-          {audioNotePlaying ? (
-            <Pause size={16} color="var(--app-accent)" />
-          ) : (
-            <Play size={16} color="var(--app-accent)" />
-          )}
-        </button>
-        <div style={audioNotePlayerStyles.content}>
-          <div style={audioNotePlayerStyles.headerRow}>
-            <span style={audioNotePlayerStyles.title}>Gravação de referência</span>
-            <span style={audioNotePlayerStyles.time}>
-              {formatAudioTime(audioNoteCurrentTime)} / {formatAudioTime(audioNoteSafeDuration)}
-            </span>
-          </div>
-          <div style={audioNotePlayerStyles.progressWrap}>
-            <div style={audioNotePlayerStyles.progressTrack}>
-              <div style={{ ...audioNotePlayerStyles.progressFill, width: `${audioNoteProgress}%` }} />
-            </div>
-            <input
-              aria-label="Buscar posição da gravação"
-              type="range"
-              min={0}
-              max={audioNoteSafeDuration || 0}
-              step={0.1}
-              value={Math.min(audioNoteCurrentTime, audioNoteSafeDuration || audioNoteCurrentTime)}
-              onChange={(event) => seekAudioNote(Number(event.currentTarget.value))}
-              style={audioNotePlayerStyles.range}
-            />
-          </div>
-        </div>
-        <button
-          type="button"
-          aria-label="Fechar gravação de referência"
-          style={audioNotePlayerStyles.closeButton}
-          onClick={closeAudioNotePlayer}
-        >
-          <X size={15} color="var(--app-muted-text)" />
-        </button>
-      </div>
-    );
-  };
-
   return (
     <View style={[styles.container, styles.songDetailContainer, performanceNoteStyles.root]}>
       {!isPlaying ? (
         <>
-          <View style={metronomeStyles.songHeader}>
-            <View style={metronomeStyles.songHeaderText}>
-              <Text style={[styles.screenTitle, metronomeStyles.songTitle]} numberOfLines={1}>{song.title}</Text>
-              <Text style={[styles.subtitle, { marginBottom: getSongGenreDisplay(song) ? 4 : 8 }]}>{song.artist}</Text>
-              {getSongGenreDisplay(song) ? (
-                <Text style={[styles.songGenreBadge, metronomeStyles.genreBadge]}>{getSongGenreDisplay(song)}</Text>
+          <View style={songNormalTopStyles.container}>
+            <View style={songNormalTopStyles.meta}>
+              {songGenreDisplay ? (
+                <Text style={[styles.songGenreBadge, songNormalTopStyles.genreBadge]}>{songGenreDisplay}</Text>
               ) : null}
             </View>
-            {renderMetronomeIndicators()}
+            <View style={songNormalTopStyles.metronome}>
+              <MetronomeIndicators
+                visualOn={metronomeVisualOn}
+                soundOn={metronomeSoundOn}
+                pulse={metronomePulse}
+                onToggleVisual={() => runOrExplain('metronomeVisual', toggleMetronomeVisual)}
+                onToggleSound={() => runOrExplain('metronomeSound', toggleMetronomeSound)}
+                visualHighlightStyle={getHelpHighlightStyle('metronomeVisual')}
+                soundHighlightStyle={getHelpHighlightStyle('metronomeSound')}
+              />
+            </View>
           </View>
           {song.observation?.trim() ? (
-            <Text style={styles.songObservation}>{song.observation.trim()}</Text>
+            <SongObservationBlock observation={song.observation.trim()} />
           ) : null}
         </>
       ) : (
-        <View style={playHeaderStyles.header}>
-          <View style={playHeaderStyles.titleBlock}>
-            <Text style={styles.screenTitle} numberOfLines={1}>{song.title}</Text>
-            <Text style={styles.subtitle} numberOfLines={1}>{song.artist}</Text>
-          </View>
-          <View style={playHeaderStyles.actions}>
-            {renderMetronomeIndicators()}
-            <TouchableOpacity
-              onPress={autoScrollEnabled ? stopAutoScroll : startAutoScroll}
-              style={[
-                playHeaderStyles.autoScrollButton,
-                autoScrollEnabled && playHeaderStyles.autoScrollButtonActive,
-              ]}
-            >
-              {autoScrollEnabled ? (
-                <Pause size={14} color="var(--app-accent)" />
-              ) : (
-                <Play size={14} color="var(--app-accent)" />
-              )}
-              <Text style={playHeaderStyles.autoScrollText}>{getAutoScrollPresetLabel(autoScrollPreset, customAutoScrollSpeed)}</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              onPress={() => setControlsModalOpen(true)}
-              style={styles.fullscreenActionBtn}
-            >
-              <Menu size={20} color="#fff" />
-            </TouchableOpacity>
-            <TouchableOpacity onPress={stopPlaying} style={styles.fullscreenActionBtn}>
-              <X size={22} color="#fff" />
-            </TouchableOpacity>
-          </View>
-        </View>
+        <PlayModeHeader
+          title={song.title}
+          artist={song.artist}
+          titleStyle={styles.screenTitle}
+          subtitleStyle={styles.subtitle}
+          metronomeIndicators={(
+            <MetronomeIndicators
+              visualOn={metronomeVisualOn}
+              soundOn={metronomeSoundOn}
+              pulse={metronomePulse}
+              onToggleVisual={() => runOrExplain('metronomeVisual', toggleMetronomeVisual)}
+              onToggleSound={() => runOrExplain('metronomeSound', toggleMetronomeSound)}
+              visualHighlightStyle={getHelpHighlightStyle('metronomeVisual')}
+              soundHighlightStyle={getHelpHighlightStyle('metronomeSound')}
+            />
+          )}
+          autoScrollEnabled={autoScrollEnabled}
+          autoScrollLabel={getAutoScrollPresetLabel(autoScrollPreset, customAutoScrollSpeed)}
+          autoScrollHighlightStyle={getHelpHighlightStyle('autoScroll')}
+          quickControlsHighlightStyle={getHelpHighlightStyle('quickControls')}
+          exitHighlightStyle={getHelpHighlightStyle('exitPlay')}
+          onToggleAutoScroll={() => runOrExplain('autoScroll', autoScrollEnabled ? stopAutoScroll : startAutoScroll)}
+          onOpenQuickControls={() => runOrExplain('quickControls', () => setControlsModalOpen(true))}
+          onExitPlay={() => runOrExplain('exitPlay', stopPlaying)}
+        />
       )}
       <div
         ref={scrollRef}
@@ -1370,17 +1683,21 @@ export function SongDetailScreen({
         onTouchEndCapture={stopPlaylistTouchSwipe}
         onTouchCancelCapture={cancelPlaylistSwipe}
       >
-        {text.split('\n').map((line, index) => (
-          <ChordLine key={index} text={line} fontSize={fontSize} settings={settings} />
-        ))}
+        <SongLyricsBlock text={text} fontSize={fontSize} settings={settings} />
       </div>
       {showPlaylistControls ? (
-        <div style={playlistSwipeIndicatorStyles.container} data-swipe-ignore="true">
+        <div
+          style={{
+            ...playlistSwipeIndicatorStyles.container,
+            ...getHelpDomHighlightStyle('swipe'),
+          }}
+          data-swipe-ignore="true"
+        >
           {previousPlaylistSong ? (
             <button
               type="button"
               style={playlistSwipeIndicatorStyles.pill}
-              onClick={() => navigateToIndex(previousPlaylistIndex)}
+              onClick={() => runOrExplain('swipe', () => navigateToIndex(previousPlaylistIndex))}
               data-swipe-ignore="true"
             >
               <span style={playlistSwipeIndicatorStyles.label}>Anterior</span>
@@ -1393,7 +1710,7 @@ export function SongDetailScreen({
             <button
               type="button"
               style={playlistSwipeIndicatorStyles.pill}
-              onClick={() => navigateToIndex(nextPlaylistIndex)}
+              onClick={() => runOrExplain('swipe', () => navigateToIndex(nextPlaylistIndex))}
               data-swipe-ignore="true"
             >
               <span style={playlistSwipeIndicatorStyles.label}>Próxima</span>
@@ -1406,330 +1723,132 @@ export function SongDetailScreen({
           )}
         </div>
       ) : null}
-      {noteVisible ? (
-        <div style={getPerformanceNoteOverlayStyle(noteOverlayTop, noteOverlayBottom)} data-swipe-ignore="true">
-        <div
-          ref={noteCardRef}
-          data-swipe-ignore="true"
-          style={getPerformanceNoteCardStyle(notePosition, noteDragging || noteResizing, noteBoxSize, noteColor)}
-          onPointerMove={moveNoteDrag}
-          onPointerUp={stopNoteDrag}
-          onPointerCancel={stopNoteDrag}
-        >
-          <div style={performanceNoteStyles.pin} />
-          <button
-            type="button"
-            aria-label="OpÃ§Ãµes do post-it"
-            style={performanceNoteStyles.menuButton}
-            onPointerDown={(event) => event.stopPropagation()}
-            onClick={() => setNoteMenuOpen((current) => !current)}
-          >
-            <MoreHorizontal size={14} color={PERFORMANCE_NOTE_COLORS[noteColor].accent} />
-          </button>
-          <button
-            type="button"
-            aria-label="Ocultar lembrete"
-            style={performanceNoteStyles.closeButton}
-            onPointerDown={(event) => event.stopPropagation()}
-            onClick={hidePerformanceNote}
-          >
-            <X size={13} color={PERFORMANCE_NOTE_COLORS[noteColor].accent} />
-          </button>
-          {noteMenuOpen ? (
-            <div style={performanceNoteStyles.menu}>
-              <div style={performanceNoteStyles.menuTitle}>Trocar cor</div>
-              <div style={performanceNoteStyles.colorRow}>
-                {NOTE_COLOR_KEYS.map((color) => (
-                  <button
-                    key={color}
-                    type="button"
-                    title={PERFORMANCE_NOTE_COLORS[color].label}
-                    style={getColorButtonStyle(color, noteColor)}
-                    onPointerDown={(event) => event.stopPropagation()}
-                    onClick={() => void selectPerformanceNoteColor(color)}
-                  />
-                ))}
-              </div>
-              <button
-                type="button"
-                style={performanceNoteStyles.deleteButton}
-                onPointerDown={(event) => event.stopPropagation()}
-                onClick={deletePerformanceNote}
-              >
-                <Trash2 size={13} color="#991b1b" />
-                Excluir anotação
-              </button>
-            </div>
-          ) : null}
-          <div
-            style={performanceNoteStyles.noteHeader}
-            onPointerDown={startNoteDrag}
-          >
-            <span style={performanceNoteStyles.iconBox}>
-              <StickyNote size={15} color={PERFORMANCE_NOTE_COLORS[noteColor].accent} />
-            </span>
-            <span style={performanceNoteStyles.label}>Lembrete</span>
-          </div>
-          <textarea
-            value={noteDraft}
-            onChange={(event) => changePerformanceNoteText(event.target.value)}
-            placeholder="Ex: Tom D"
-            style={getPerformanceNoteTextareaStyle(noteBoxSize, noteColor)}
-            onPointerDown={(event) => event.stopPropagation()}
-          />
-          <div style={performanceNoteStyles.noteFooter}>
-            <span style={performanceNoteStyles.autosaveStatus}>
-              {noteSaveStatus === 'saving' ? 'Salvando...' : noteSaveStatus === 'saved' ? 'Salvo' : 'Autosave'}
-            </span>
-          </div>
-          <div
-            style={performanceNoteStyles.resizeHandle}
-            onPointerDown={startNoteResize}
-            onPointerMove={moveNoteResize}
-            onPointerUp={stopNoteResize}
-            onPointerCancel={stopNoteResize}
-          />
-        </div>
-        </div>
-      ) : null}
+      <PerformanceNote
+        visible={noteVisible}
+        overlayTop={noteOverlayTop}
+        overlayBottom={noteOverlayBottom}
+        cardRef={noteCardRef}
+        position={notePosition}
+        boxSize={noteBoxSize}
+        color={noteColor}
+        colorKeys={NOTE_COLOR_KEYS}
+        colorConfig={PERFORMANCE_NOTE_COLORS}
+        dragging={noteDragging}
+        resizing={noteResizing}
+        menuOpen={noteMenuOpen}
+        draft={noteDraft}
+        readOnly={helpMode}
+        saveStatus={noteSaveStatus}
+        menuHighlightStyle={getHelpDomHighlightStyle('noteMenu')}
+        hideHighlightStyle={getHelpDomHighlightStyle('noteHide')}
+        dragHighlightStyle={getHelpDomHighlightStyle('noteDrag')}
+        resizeHighlightStyle={getHelpDomHighlightStyle('noteResize')}
+        onCardPointerMove={moveNoteDrag}
+        onCardPointerUp={stopNoteDrag}
+        onCardPointerCancel={stopNoteDrag}
+        onToggleMenu={() => runOrExplain('noteMenu', () => setNoteMenuOpen((current) => !current))}
+        onHide={() => runOrExplain('noteHide', hidePerformanceNote)}
+        onDelete={deletePerformanceNote}
+        onHeaderPointerDown={startNoteDrag}
+        onTextPointerDown={() => {
+          if (helpMode) showHelp('postIt');
+        }}
+        onTextChange={(value) => {
+          if (helpMode) {
+            showHelp('postIt');
+            return;
+          }
+          changePerformanceNoteText(value);
+        }}
+        onSelectColor={(color) => void selectPerformanceNoteColor(color)}
+        onResizePointerDown={startNoteResize}
+        onResizePointerMove={moveNoteResize}
+        onResizePointerUp={stopNoteResize}
+        onResizePointerCancel={stopNoteResize}
+      />
       {!isPlaying && audioNotePlayerVisible && hasAudioNote ? renderAudioNotePlayer('fixed') : null}
       {!isPlaying && controlsVisible ? (
-        <View style={styles.panel} data-swipe-ignore="true">
-          <TouchableOpacity onPress={startPlaying} style={styles.panelBtn}>
-            <Play size={18} color="#4FC3F7" />
-          </TouchableOpacity>
-          {hasAudioNote ? (
-            <TouchableOpacity onPress={toggleAudioNote} style={styles.panelBtn}>
-              {audioNotePlaying ? (
-                <Pause size={17} color="#ff6b6b" />
-              ) : (
-                <Mic size={17} color="#ff6b6b" />
-              )}
-            </TouchableOpacity>
-          ) : null}
-          <TouchableOpacity onPress={() => changeFontSize(-1)} style={styles.panelBtn}>
-            <Text style={{ color: '#bbb', fontWeight: '700' }}>A-</Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={() => changeFontSize(1)} style={styles.panelBtn}>
-            <Text style={{ color: '#bbb', fontWeight: '700' }}>A+</Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={() => setTomOpen(true)} style={styles.panelBtn}>
-            <Text style={styles.transpose}>{selectedTom}</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            onPress={openAddToPlaylistModal}
-            style={styles.panelBtn}
-          >
-            <ListMusic size={17} color="#ffd166" />
-          </TouchableOpacity>
-          <TouchableOpacity
-            onPress={openPerformanceNote}
-            style={[styles.panelBtn, hasPerformanceNoteDraft ? styles.panelBtnActive : null]}
-          >
-            <StickyNote size={17} color={hasPerformanceNoteDraft ? '#051014' : '#fbbf24'} />
-          </TouchableOpacity>
-          <TouchableOpacity
-            onPress={openEditor}
-            style={styles.panelBtn}
-          >
-            <Pencil size={17} color="#4FC3F7" />
-          </TouchableOpacity>
-        </View>
+        <SongBottomToolbar
+          hasAudioNote={hasAudioNote}
+          audioNotePlaying={audioNotePlaying}
+          hasYoutubeUrl={!!song?.youtubeUrl?.trim()}
+          hasPerformanceNoteDraft={hasPerformanceNoteDraft}
+          selectedTom={selectedTom}
+          onPlay={() => runOrExplain('play', startPlaying)}
+          onAudio={() => runOrExplain('audio', toggleAudioNote)}
+          onYoutube={() => runOrExplain('youtube', openYoutubeModal)}
+          onFontDown={() => runOrExplain('fontDown', () => void changeFontSize(-1))}
+          onFontUp={() => runOrExplain('fontUp', () => void changeFontSize(1))}
+          onKey={() => runOrExplain('key', () => setTomOpen(true))}
+          onAddToPlaylist={() => runOrExplain('addToPlaylist', () => void addToPlaylist.openModal())}
+          onPostIt={() => runOrExplain('postIt', openPerformanceNote)}
+          onEdit={() => runOrExplain('edit', openEditor)}
+          playHighlightStyle={getHelpHighlightStyle('play')}
+          audioHighlightStyle={getHelpHighlightStyle('audio')}
+          youtubeHighlightStyle={getHelpHighlightStyle('youtube')}
+          fontDownHighlightStyle={getHelpHighlightStyle('fontDown')}
+          fontUpHighlightStyle={getHelpHighlightStyle('fontUp')}
+          keyHighlightStyle={getHelpHighlightStyle('key')}
+          addToPlaylistHighlightStyle={getHelpHighlightStyle('addToPlaylist')}
+          postItHighlightStyle={getHelpHighlightStyle('postIt')}
+          editHighlightStyle={getHelpHighlightStyle('edit')}
+        />
       ) : null}
 
-      <AppModal
-        visible={controlsModalOpen}
-        title="Controles Rápidos"
-        onClose={() => setControlsModalOpen(false)}
-        icon={<Menu size={16} color="var(--app-accent)" />}
-        maxWidth={520}
-      >
-        <ScrollView
-          style={quickControlsStyles.scrollBody}
-          contentContainerStyle={quickControlsStyles.body}
-        >
-          <View style={quickControlsStyles.section}>
-            <Text style={quickControlsStyles.sectionTitle}>Navegação</Text>
-          <View style={quickControlsStyles.navRow}>
-            <TouchableOpacity
-              style={[
-                quickControlsStyles.navButton,
-                previousDisabled && quickControlsStyles.disabledButton,
-              ]}
-              disabled={previousDisabled}
-              onPress={() => navigateToIndex(currentSongIndex - 1)}
-            >
-              <ChevronLeft size={18} color={previousDisabled ? '#777' : '#4FC3F7'} />
-              <Text style={[quickControlsStyles.navButtonText, previousDisabled && quickControlsStyles.disabledText]}>
-                Anterior
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[
-                quickControlsStyles.navButton,
-                !nextDisabled && quickControlsStyles.navButtonPrimary,
-                nextDisabled && quickControlsStyles.disabledButton,
-              ]}
-              disabled={nextDisabled}
-              onPress={() => navigateToIndex(currentSongIndex + 1)}
-            >
-              <Text style={[quickControlsStyles.navButtonText, nextDisabled && quickControlsStyles.disabledText]}>
-                Próxima
-              </Text>
-              <ChevronRight size={18} color={nextDisabled ? '#777' : '#4FC3F7'} />
-            </TouchableOpacity>
-          </View>
-          </View>
-          <View style={quickControlsStyles.section}>
-          <Text style={quickControlsStyles.sectionTitle}>Lista atual</Text>
-          <TouchableOpacity
-            style={quickControlsStyles.featureButton}
-            onPress={() => {
-              setControlsModalOpen(false);
-              setListModalOpen(true);
-            }}
-          >
-            <View style={quickControlsStyles.featureIcon}>
-              <ListMusic size={20} color="#4FC3F7" />
-            </View>
-            <View style={quickControlsStyles.featureTextBlock}>
-              <Text style={quickControlsStyles.featureTitle}>Ver Lista Atual</Text>
-              <Text style={quickControlsStyles.featureSubtitle} numberOfLines={1}>{currentListName}</Text>
-            </View>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[quickControlsStyles.featureButton, quickControlsStyles.featureButtonTight, { display: 'none' }]}
-            onPress={() => {
-              setControlsModalOpen(false);
-              void openAddToPlaylistModal();
-            }}
-          >
-            <View style={quickControlsStyles.featureIcon}>
-              <ListMusic size={19} color="#4FC3F7" />
-            </View>
-            <View style={quickControlsStyles.featureTextBlock}>
-              <Text style={quickControlsStyles.featureTitle}>Adicionar à lista</Text>
-              <Text style={quickControlsStyles.featureSubtitle} numberOfLines={1}>Enviar música atual para um repertório</Text>
-            </View>
-          </TouchableOpacity>
-          </View>
-          <View style={quickControlsStyles.section}>
-          <Text style={quickControlsStyles.sectionTitle}>Exibição</Text>
-          <View style={quickControlsStyles.controlGrid}>
-            <TouchableOpacity style={quickControlsStyles.controlPill} onPress={() => changeFontSize(-1)}>
-              <Text style={quickControlsStyles.controlPillText}>A-</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={quickControlsStyles.controlPill} onPress={() => changeFontSize(1)}>
-              <Text style={quickControlsStyles.controlPillText}>A+</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={[quickControlsStyles.controlPill, quickControlsStyles.controlPillSoft]} onPress={() => setTomOpen(true)}>
-              <Text style={quickControlsStyles.controlPillAccent}>{selectedTom}</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[quickControlsStyles.controlPill, quickControlsStyles.controlPillWide]}
-              onPress={() => setPlaylistControlsVisible((current) => !current)}
-            >
-              <Text style={quickControlsStyles.controlPillAccent}>
-                {playlistControlsVisible ? 'Ocultar botões' : 'Mostrar botões'}
-              </Text>
-            </TouchableOpacity>
-          </View>
-          </View>
-          <View style={quickControlsStyles.section}>
-          <Text style={quickControlsStyles.sectionTitle}>Auto-scroll</Text>
-          <View style={quickControlsStyles.autoScrollBox}>
-            <View style={quickControlsStyles.autoScrollHeader}>
-              <View>
-                <Text style={quickControlsStyles.featureTitle}>Auto-scroll</Text>
-                <Text style={quickControlsStyles.featureSubtitle}>Rolar cifra no modo Play</Text>
-              </View>
-              <TouchableOpacity
-                style={[
-                  quickControlsStyles.autoScrollCustomHeaderButton,
-                  autoScrollPreset === 'custom' && quickControlsStyles.autoScrollPresetActive,
-                ]}
-                onPress={openCustomAutoScroll}
-              >
-                <Text style={[
-                  quickControlsStyles.autoScrollPresetText,
-                  autoScrollPreset === 'custom' && quickControlsStyles.autoScrollPresetTextActive,
-                ]}>
-                  Personalizado
-                </Text>
-                <Text style={[
-                  quickControlsStyles.autoScrollPresetHint,
-                  autoScrollPreset === 'custom' && quickControlsStyles.autoScrollPresetTextActive,
-                ]}>
-                  {customAutoScrollSpeed} px/s
-                </Text>
-              </TouchableOpacity>
-            </View>
-            <Text style={quickControlsStyles.autoScrollSectionTitle}>Velocidade da rolagem</Text>
-            <View style={quickControlsStyles.autoScrollPresetRow}>
-              {AUTO_SCROLL_PRESET_OPTIONS.map((option) => {
-                const selected = autoScrollPreset === option.value;
-                return (
-                  <TouchableOpacity
-                    key={option.value}
-                    style={[
-                      quickControlsStyles.autoScrollPreset,
-                      selected && quickControlsStyles.autoScrollPresetActive,
-                    ]}
-                    onPress={() => selectAutoScrollPreset(option.value)}
-                  >
-                    <Text style={[
-                      quickControlsStyles.autoScrollPresetText,
-                      selected && quickControlsStyles.autoScrollPresetTextActive,
-                    ]}>
-                      {option.label}
-                    </Text>
-                    <Text style={[
-                      quickControlsStyles.autoScrollPresetHint,
-                      selected && quickControlsStyles.autoScrollPresetTextActive,
-                    ]}>
-                      {option.speed} px/s
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-            <TouchableOpacity
-              style={[
-                quickControlsStyles.autoScrollPreset,
-                quickControlsStyles.autoScrollCustomPreset,
-                { display: 'none' },
-                autoScrollPreset === 'custom' && quickControlsStyles.autoScrollPresetActive,
-              ]}
-              onPress={openCustomAutoScroll}
-            >
-              <Text style={[
-                quickControlsStyles.autoScrollPresetText,
-                autoScrollPreset === 'custom' && quickControlsStyles.autoScrollPresetTextActive,
-              ]}>
-                Personalizado
-              </Text>
-              <Text style={[
-                quickControlsStyles.autoScrollPresetHint,
-                autoScrollPreset === 'custom' && quickControlsStyles.autoScrollPresetTextActive,
-              ]}>
-                {customAutoScrollSpeed} px/s
-              </Text>
-            </TouchableOpacity>
-          </View>
-          </View>
-          {hasAudioNote ? (
-            <View style={quickControlsStyles.section}>
-            <Text style={quickControlsStyles.sectionTitle}>Gravação</Text>
-            <View style={quickControlsStyles.audioSection}>
-              {renderAudioNotePlayer('inline')}
-            </View>
-            </View>
-          ) : null}
-        </ScrollView>
-      </AppModal>
+      <HelpModeOverlay
+        visible={helpMode}
+        activeItem={activeHelpItem}
+        onDismissItem={() => setActiveHelpTarget(null)}
+      />
 
+      {isPlaying ? (
+        <TouchableOpacity
+          accessibilityRole="button"
+          accessibilityLabel={helpMode ? 'Sair da ajuda da tela' : 'Ativar ajuda da tela'}
+          onPress={helpMode ? exitHelpMode : enterHelpMode}
+          style={[
+            helpStyles.floatingHelpButton,
+            helpStyles.floatingHelpButtonPlay,
+            helpMode && helpStyles.floatingHelpButtonActive,
+            helpMode ? helpStyles.floatingHelpButtonHelpModeLayer : null,
+          ]}
+          data-swipe-ignore="true"
+        >
+          <HelpCircle size={19} color={helpMode ? '#051014' : 'var(--app-accent)'} />
+        </TouchableOpacity>
+      ) : null}
+
+      <QuickControlsModal
+        visible={controlsModalOpen && !helpMode}
+        currentListName={currentListName}
+        currentSongIndex={currentSongIndex}
+        previousDisabled={previousDisabled}
+        nextDisabled={nextDisabled}
+        selectedTom={selectedTom}
+        playlistControlsVisible={playlistControlsVisible}
+        autoScrollPreset={autoScrollPreset}
+        autoScrollPresetOptions={AUTO_SCROLL_PRESET_OPTIONS}
+        customAutoScrollSpeed={customAutoScrollSpeed}
+        hasAudioNote={hasAudioNote}
+        audioPlayer={renderAudioNotePlayer('inline')}
+        onClose={() => setControlsModalOpen(false)}
+        onNavigateToIndex={navigateToIndex}
+        onOpenCurrentList={() => {
+          setControlsModalOpen(false);
+          setListModalOpen(true);
+        }}
+        onOpenAddToPlaylist={() => {
+          setControlsModalOpen(false);
+          void addToPlaylist.openModal();
+        }}
+        onChangeFontSize={changeFontSize}
+        onOpenTom={() => setTomOpen(true)}
+        onTogglePlaylistControls={() => setPlaylistControlsVisible((current) => !current)}
+        onOpenCustomAutoScroll={openCustomAutoScroll}
+        onSelectAutoScrollPreset={selectAutoScrollPreset}
+      />
       <AppModal
-        visible={customAutoScrollOpen}
+        visible={customAutoScrollOpen && !helpMode}
         title="Velocidade do auto-scroll"
         onClose={() => setCustomAutoScrollOpen(false)}
         maxWidth={420}
@@ -1772,354 +1891,57 @@ export function SongDetailScreen({
         </View>
       </AppModal>
 
-      <AppModal
-        visible={listModalOpen}
+      <CurrentPlaylistModal
+        visible={listModalOpen && !helpMode}
         title={currentListName}
+        songs={currentSongList}
+        currentSongIndex={currentSongIndex}
         onClose={() => setListModalOpen(false)}
-        icon={<ListMusic size={16} color="var(--app-accent)" />}
-        maxWidth={520}
-        footer={
-          <TouchableOpacity onPress={() => setListModalOpen(false)}>
-            <Text style={{ color: 'var(--app-muted-text)', fontWeight: '800' }}>Fechar</Text>
-          </TouchableOpacity>
-        }
-      >
-        <ScrollView style={{ maxHeight: 360 }} contentContainerStyle={{ paddingBottom: 8 }}>
-            <FlatList<Song>
-              data={currentSongList}
-              keyExtractor={(item: Song) => item.id}
-              style={{ maxHeight: 320, paddingHorizontal: 12 }}
-              renderItem={({ item, index }: { item: Song; index: number }) => (
-                <TouchableOpacity
-                  style={[
-                    quickControlsStyles.listSongRow,
-                    index === currentSongIndex && quickControlsStyles.listSongRowActive,
-                  ]}
-                  onPress={() => navigateToIndex(index)}
-                >
-                  <Text style={[quickControlsStyles.listSongIndex, index === currentSongIndex && quickControlsStyles.listSongIndexActive]}>
-                    {index + 1}
-                  </Text>
-                  <View style={quickControlsStyles.listSongTextBlock}>
-                    <Text style={[quickControlsStyles.listSongTitle, index === currentSongIndex && quickControlsStyles.listSongTitleActive]} numberOfLines={1}>
-                      {item.title}
-                    </Text>
-                    <Text style={quickControlsStyles.listSongArtist} numberOfLines={1}>{item.artist || 'Sem artista'}</Text>
-                  </View>
-                </TouchableOpacity>
-              )}
-              ListEmptyComponent={<Text style={styles.settingsEmptyText}>Nenhuma música na lista atual.</Text>}
-            />
-        </ScrollView>
-      </AppModal>
-
-      <AppModal
-        visible={addToPlaylistOpen}
+        onNavigateToIndex={navigateToIndex}
+      />
+      <PlaylistPickerModal
+        visible={addToPlaylist.open && !helpMode}
         title="Adicionar à lista"
-        onClose={closeAddToPlaylistModal}
-        icon={<ListMusic size={16} color="#ffd166" />}
-        maxWidth={520}
-        footer={
-          <TouchableOpacity onPress={closeAddToPlaylistModal}>
-            <Text style={{ color: 'var(--app-muted-text)', fontWeight: '800' }}>Fechar</Text>
-          </TouchableOpacity>
-        }
-      >
-        <View style={[styles.search, { marginHorizontal: 0, marginBottom: 10 }]}>
-          <Search size={18} color="#999" />
-          <TextInput
-            style={styles.inputSearch}
-            placeholder="Buscar lista..."
-            placeholderTextColor="#666"
-            value={addToPlaylistSearch}
-            onChangeText={setAddToPlaylistSearch}
-            autoFocus
-          />
-        </View>
-        <ScrollView style={{ maxHeight: 420 }} contentContainerStyle={{ paddingBottom: 10 }}>
-          {visibleAddToPlaylistOptions.length ? (
-            visibleAddToPlaylistOptions.map((playlist) => {
-              const alreadyAdded = playlistAlreadyHasSong(playlist);
-              const isAdding = addingToPlaylistId === playlist.id;
-              const isRemoving = removingFromPlaylistId === playlist.id;
-              return (
-                <TouchableOpacity
-                  key={playlist.id}
-                  style={[
-                    quickControlsStyles.addToPlaylistRow,
-                    alreadyAdded && quickControlsStyles.addToPlaylistRowDisabled,
-                  ]}
-                  disabled={!!addingToPlaylistId || !!removingFromPlaylistId}
-                  onPress={() => void addCurrentSongToPlaylist(playlist)}
-                >
-                  <View style={quickControlsStyles.featureIcon}>
-                    <ListMusic size={17} color={alreadyAdded ? 'var(--app-muted-text)' : '#ffd166'} />
-                  </View>
-                  <View style={quickControlsStyles.featureTextBlock}>
-                    <Text
-                      style={[
-                        quickControlsStyles.featureTitle,
-                        alreadyAdded && quickControlsStyles.addToPlaylistTextMuted,
-                      ]}
-                      numberOfLines={1}
-                    >
-                      {playlist.name}
-                    </Text>
-                    <Text style={quickControlsStyles.featureSubtitle} numberOfLines={1}>
-                      {getAddToPlaylistSubtitle(playlist)}
-                    </Text>
-                  </View>
-                  <View style={quickControlsStyles.addToPlaylistStatus}>
-                    <Text style={[
-                      quickControlsStyles.addToPlaylistStatusText,
-                      alreadyAdded && quickControlsStyles.addToPlaylistStatusDone,
-                    ]}>
-                      {alreadyAdded ? 'Já está nesta lista' : isAdding ? 'Adicionando...' : 'Adicionar'}
-                    </Text>
-                    {alreadyAdded ? (
-                      <TouchableOpacity
-                        style={quickControlsStyles.removeFromPlaylistButton}
-                        disabled={isRemoving}
-                        onPress={() => void removeCurrentSongFromPlaylist(playlist)}
-                      >
-                        <Text style={quickControlsStyles.removeFromPlaylistText}>
-                          {isRemoving ? 'Retirando...' : 'Retirar'}
-                        </Text>
-                      </TouchableOpacity>
-                    ) : null}
-                  </View>
-                </TouchableOpacity>
-              );
-            })
-          ) : (
-            <Text style={[styles.subtitle, { marginTop: 6 }]}>Nenhuma lista encontrada.</Text>
-          )}
-        </ScrollView>
-      </AppModal>
+        contextText={addToPlaylist.contextText}
+        query={addToPlaylist.query}
+        playlists={addToPlaylist.visiblePlaylists}
+        addingToPlaylistId={addToPlaylist.addingToPlaylistId}
+        removingFromPlaylistId={addToPlaylist.removingFromPlaylistId}
+        onQueryChange={addToPlaylist.setQuery}
+        onClose={addToPlaylist.closeModal}
+        playlistAlreadyHasSong={addToPlaylist.playlistAlreadyHasSong}
+        getPlaylistSubtitle={addToPlaylist.getPlaylistSubtitle}
+        onSelectPlaylist={(playlist) => void addToPlaylist.addCurrentSongToPlaylist(playlist)}
+        onRemoveFromPlaylist={(playlist) => void addToPlaylist.removeCurrentSongFromPlaylist(playlist)}
+        showStars={addToPlaylist.showStars}
+        onToggleStarredPlaylist={addToPlaylist.togglePlaylistStar}
+        actionLabel="Adicionar"
+        busyLabel="Adicionando..."
+        alreadyAddedLabel="Já está nesta lista"
+        emptyLabel="Nenhuma lista encontrada."
+      />
 
-      <AppModal
-        visible={tomOpen}
-        title="Selecionar tom"
+      <YoutubeOptionsModal
+        visible={youtubeModalOpen && !helpMode}
+        title={song?.title || 'Sem título'}
+        artist={song?.artist}
+        youtubeUrl={song?.youtubeUrl}
+        linkCopied={youtubeLinkCopied}
+        onClose={closeYoutubeModal}
+        onOpenYoutube={openYoutubeLink}
+        onCopyLink={() => void copyYoutubeLink()}
+      />
+
+      <TomSelectorModal
+        visible={tomOpen && !helpMode}
+        selectedTom={selectedTom}
+        keyOptions={keyOptions}
         onClose={() => setTomOpen(false)}
-        maxWidth={420}
-        footer={
-          <TouchableOpacity onPress={() => setTomOpen(false)}>
-            <Text style={{ color: 'var(--app-muted-text)', fontWeight: '800' }}>Fechar</Text>
-          </TouchableOpacity>
-        }
-      >
-        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-          {keyOptions.map((key) => (
-            <TouchableOpacity
-              key={key}
-              style={{
-                borderWidth: 1,
-                borderColor: selectedTom === key ? 'var(--app-accent)' : 'var(--app-border-soft)',
-                borderRadius: 8,
-                paddingVertical: 8,
-                paddingHorizontal: 12,
-                backgroundColor: selectedTom === key ? 'var(--app-accent-soft)' : 'var(--app-surface-alt)',
-              }}
-              onPress={() => {
-                setSelectedTom(key);
-                setTomOpen(false);
-              }}
-            >
-              <Text style={{ color: selectedTom === key ? 'var(--app-accent)' : 'var(--app-text)', fontWeight: '800' }}>{key}</Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-      </AppModal>
+        onSelectTom={selectTom}
+      />
     </View>
   );
 }
-
-const getPerformanceNoteCardStyle = (
-  position: { x: number; y: number },
-  dragging: boolean,
-  boxSize: PerformanceNoteBoxSize,
-  color: PerformanceNoteColor
-): CSSProperties => ({
-  width: boxSize.width,
-  height: boxSize.height,
-  position: 'absolute',
-  left: position.x,
-  top: position.y,
-  zIndex: 40,
-  maxWidth: 'calc(100vw - 24px)',
-  borderRadius: 10,
-  border: `1px solid ${PERFORMANCE_NOTE_COLORS[color].border}`,
-  background: PERFORMANCE_NOTE_COLORS[color].background,
-  boxShadow: dragging
-    ? '0 18px 36px rgba(0, 0, 0, 0.36)'
-    : '0 12px 24px rgba(0, 0, 0, 0.26)',
-  padding: '14px 14px 16px',
-  color: PERFORMANCE_NOTE_COLORS[color].text,
-  cursor: dragging ? 'grabbing' : 'grab',
-  touchAction: 'none',
-  userSelect: 'none',
-  pointerEvents: 'auto',
-  transform: dragging ? 'rotate(-1deg) scale(1.015)' : 'rotate(-1deg)',
-  transition: dragging ? 'none' : 'box-shadow 140ms ease, transform 140ms ease',
-});
-
-const getPerformanceNoteOverlayStyle = (top: number, bottom: number): CSSProperties => ({
-  position: 'fixed',
-  top,
-  left: 0,
-  right: 0,
-  bottom,
-  zIndex: 39,
-  pointerEvents: 'none',
-  overflow: 'hidden',
-});
-
-const getPerformanceNoteTextareaStyle = (
-  boxSize: PerformanceNoteBoxSize,
-  color: PerformanceNoteColor
-): CSSProperties => ({
-  width: '100%',
-  minHeight: Math.max(56, boxSize.height - 86),
-  border: 'none',
-  outline: 'none',
-  resize: 'none',
-  background: 'rgba(255, 255, 255, 0.2)',
-  borderRadius: 8,
-  color: PERFORMANCE_NOTE_COLORS[color].text,
-  fontSize: 13,
-  lineHeight: '18px',
-  fontWeight: '700',
-  fontFamily: 'inherit',
-  boxSizing: 'border-box',
-  padding: '8px 9px',
-});
-
-const getColorButtonStyle = (
-  color: PerformanceNoteColor,
-  selectedColor: PerformanceNoteColor
-): CSSProperties => ({
-  width: 22,
-  height: 22,
-  borderRadius: 999,
-  border: color === selectedColor ? `2px solid ${PERFORMANCE_NOTE_COLORS[color].accent}` : '1px solid rgba(0,0,0,0.18)',
-  background: PERFORMANCE_NOTE_COLORS[color].background,
-  cursor: 'pointer',
-  padding: 0,
-});
-
-const getAudioNotePlayerStyle = (controlsVisible: boolean): CSSProperties => ({
-  position: 'fixed',
-  left: 12,
-  right: 12,
-  bottom: controlsVisible ? 84 : 14,
-  zIndex: 28,
-  display: 'flex',
-  alignItems: 'center',
-  gap: 10,
-  minHeight: 62,
-  borderRadius: 14,
-  border: '1px solid var(--app-border-soft)',
-  background: 'var(--app-surface)',
-  boxShadow: '0 12px 28px rgba(0,0,0,0.28)',
-  padding: '10px 12px',
-  boxSizing: 'border-box',
-});
-
-const audioNotePlayerStyles = {
-  inlineRoot: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 10,
-    minHeight: 62,
-    borderRadius: 14,
-    border: '1px solid var(--app-border-soft)',
-    background: 'var(--app-surface)',
-    padding: '10px 12px',
-    boxSizing: 'border-box',
-  },
-  iconButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 14,
-    border: '1px solid var(--app-border-soft)',
-    background: 'var(--app-header)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 0,
-    cursor: 'pointer',
-    flexShrink: 0,
-  },
-  content: {
-    flex: 1,
-    minWidth: 0,
-  },
-  headerRow: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
-    marginBottom: 8,
-  },
-  title: {
-    color: 'var(--app-text)',
-    fontSize: 12,
-    fontWeight: '900',
-    whiteSpace: 'nowrap',
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-  },
-  time: {
-    color: 'var(--app-muted-text)',
-    fontSize: 11,
-    fontWeight: '800',
-    whiteSpace: 'nowrap',
-    flexShrink: 0,
-  },
-  progressWrap: {
-    position: 'relative',
-    height: 20,
-  },
-  progressTrack: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    top: 8,
-    height: 5,
-    borderRadius: 999,
-    background: 'var(--app-surface-alt)',
-    overflow: 'hidden',
-    border: '1px solid var(--app-border-soft)',
-  },
-  progressFill: {
-    height: '100%',
-    borderRadius: 999,
-    background: 'var(--app-accent)',
-  },
-  range: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    top: 0,
-    width: '100%',
-    height: 20,
-    opacity: 0,
-    cursor: 'pointer',
-  },
-  closeButton: {
-    width: 30,
-    height: 30,
-    borderRadius: 12,
-    border: '1px solid var(--app-border-soft)',
-    background: 'var(--app-surface-alt)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 0,
-    cursor: 'pointer',
-    flexShrink: 0,
-  },
-} satisfies Record<string, CSSProperties>;
 
 const playlistSwipeIndicatorStyles = {
   container: {
@@ -2190,504 +2012,96 @@ const performanceNoteStyles = {
   root: {
     position: 'relative',
   },
-  pin: {
-    position: 'absolute',
-    top: 8,
-    left: '50%',
-    width: 34,
-    height: 6,
-    borderRadius: 999,
-    backgroundColor: 'rgba(120, 82, 12, 0.18)',
-    transform: 'translateX(-50%)',
-  },
-  closeButton: {
-    position: 'absolute',
-    top: 7,
-    right: 7,
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    border: '1px solid rgba(95, 67, 0, 0.22)',
-    background: 'rgba(255, 255, 255, 0.38)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 0,
-    cursor: 'pointer',
-  },
-  menuButton: {
-    position: 'absolute',
-    top: 7,
-    right: 36,
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    border: '1px solid rgba(95, 67, 0, 0.22)',
-    background: 'rgba(255, 255, 255, 0.38)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 0,
-    cursor: 'pointer',
-  },
-  menu: {
-    position: 'absolute',
-    top: 36,
-    right: 8,
-    zIndex: 2,
-    width: 186,
-    borderRadius: 10,
-    border: '1px solid rgba(0,0,0,0.14)',
-    background: 'rgba(255,255,255,0.88)',
-    boxShadow: '0 12px 22px rgba(0,0,0,0.22)',
-    padding: 10,
-  },
-  menuTitle: {
-    color: '#3d2a03',
-    fontSize: 11,
-    fontWeight: '900',
-    textTransform: 'uppercase',
-    marginBottom: 8,
-  },
-  colorRow: {
-    display: 'flex',
-    flexDirection: 'row',
-    gap: 7,
-    marginBottom: 10,
-  },
-  deleteButton: {
-    width: '100%',
-    minHeight: 32,
-    borderRadius: 8,
-    border: '1px solid rgba(153,27,27,0.18)',
-    background: 'rgba(254,226,226,0.78)',
-    color: '#991b1b',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexDirection: 'row',
-    gap: 6,
-    fontSize: 12,
-    fontWeight: '900',
-    cursor: 'pointer',
-  },
-  noteHeader: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 7,
-    paddingRight: 24,
-    marginTop: 4,
-    marginBottom: 8,
-    cursor: 'grab',
-    touchAction: 'none',
-  },
-  iconBox: {
-    width: 24,
-    height: 24,
-    borderRadius: 8,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.38)',
-    border: '1px solid rgba(95, 67, 0, 0.18)',
-    flexShrink: 0,
-  },
-  label: {
-    color: '#5f4300',
-    fontSize: 11,
-    fontWeight: '900',
-    textTransform: 'uppercase',
-    letterSpacing: 0.2,
-  },
-  noteFooter: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'flex-end',
-    marginTop: 8,
-  },
-  autosaveStatus: {
-    color: '#5f4300',
-    fontSize: 10,
-    fontWeight: '900',
-    textTransform: 'uppercase',
-    opacity: 0.72,
-  },
-  resizeHandle: {
-    position: 'absolute',
-    right: 4,
-    bottom: 4,
-    width: 18,
-    height: 18,
-    borderRight: '3px solid rgba(95, 67, 0, 0.34)',
-    borderBottom: '3px solid rgba(95, 67, 0, 0.34)',
-    borderRadius: 3,
-    cursor: 'nwse-resize',
-    touchAction: 'none',
-  },
 } satisfies Record<string, CSSProperties>;
 
-const metronomeStyles = StyleSheet.create({
-  songHeader: {
-    paddingTop: 12,
+const songNormalTopStyles = StyleSheet.create({
+  container: {
+    paddingTop: 8,
     paddingHorizontal: 12,
+    paddingBottom: 2,
     flexDirection: 'row',
-    alignItems: 'flex-start',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     gap: 10,
   },
-  songHeaderText: {
+  meta: {
     flex: 1,
     minWidth: 0,
-  },
-  songTitle: {
-    marginHorizontal: 0,
-    marginBottom: 6,
   },
   genreBadge: {
     marginHorizontal: 0,
-    marginBottom: 8,
+    marginBottom: 0,
+    alignSelf: 'flex-start',
   },
-  indicatorRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
+  metronome: {
     flexShrink: 0,
-  },
-  indicator: {
-    width: 28,
-    height: 28,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: 'var(--app-border-soft)',
-    backgroundColor: 'var(--app-surface)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  indicatorDisabled: {
-    opacity: 0.48,
-    backgroundColor: 'var(--app-surface-alt)',
-  },
-  visualIndicatorActive: {
-    borderColor: 'var(--app-accent)',
-    backgroundColor: 'var(--app-accent-soft)',
-  },
-  soundIndicatorActive: {
-    borderColor: SOUND_INDICATOR_COLOR,
-    backgroundColor: SOUND_INDICATOR_COLOR,
-  },
-  indicatorPulse: {
-    transform: [{ scale: 1.06 }],
-    backgroundColor: 'var(--app-accent)',
-  },
-  indicatorStrongPulse: {
-    transform: [{ scale: 1.15 }],
-    backgroundColor: 'var(--app-accent)',
-    borderColor: 'var(--app-accent)',
-  },
-  soundStrongPulse: {
-    transform: [{ scale: 1.1 }],
-  },
-  innerMark: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: 'var(--app-accent)',
-    opacity: 0.85,
   },
 });
 
-const playHeaderStyles = StyleSheet.create({
-  header: {
+const helpDomStyles: Record<string, CSSProperties> = {
+  helpable: {
+    position: 'relative',
+    zIndex: 60,
+    boxShadow: '0 0 0 2px rgba(79, 195, 247, 0.5), 0 0 22px rgba(79, 195, 247, 0.22)',
+  },
+  helpableActive: {
+    position: 'relative',
+    zIndex: 61,
+    boxShadow: '0 0 0 3px rgba(79, 195, 247, 0.95), 0 0 30px rgba(79, 195, 247, 0.38)',
+  },
+};
+
+const helpStyles = StyleSheet.create({
+  helpable: {
+    position: 'relative',
+    zIndex: 60,
+    borderColor: 'rgba(79, 195, 247, 0.72)',
+    boxShadow: '0 0 0 2px rgba(79, 195, 247, 0.28), 0 0 20px rgba(79, 195, 247, 0.2)',
+  },
+  helpableActive: {
+    position: 'relative',
+    zIndex: 61,
+    borderColor: 'var(--app-accent)',
+    boxShadow: '0 0 0 3px rgba(79, 195, 247, 0.65), 0 0 30px rgba(79, 195, 247, 0.34)',
+  },
+  floatingHelpButton: {
     position: 'fixed',
-    top: 0,
-    left: 0,
-    right: 0,
-    zIndex: 40,
-    paddingTop: 10,
-    paddingHorizontal: 12,
-    paddingBottom: 8,
-    flexDirection: 'row',
+    right: 16,
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    zIndex: 90,
     alignItems: 'center',
-    gap: 10,
-    backgroundColor: 'var(--app-header)',
-    borderBottomWidth: 1,
-    borderBottomColor: 'var(--app-border-soft)',
-  },
-  titleBlock: {
-    flex: 1,
-    minWidth: 0,
-  },
-  actions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  autoScrollButton: {
-    minHeight: 36,
-    borderRadius: 999,
+    justifyContent: 'center',
     borderWidth: 1,
     borderColor: 'var(--app-border-soft)',
     backgroundColor: 'var(--app-surface)',
-    paddingHorizontal: 10,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
+    boxShadow: '0 12px 30px rgba(0, 0, 0, 0.28)',
+    pointerEvents: 'auto',
   },
-  autoScrollButtonActive: {
+  floatingHelpButtonLow: {
+    bottom: 18,
+  },
+  floatingHelpButtonAbovePanel: {
+    bottom: 96,
+  },
+  floatingHelpButtonAboveAudio: {
+    bottom: 174,
+  },
+  floatingHelpButtonPlay: {
+    top: 74,
+  },
+  floatingHelpButtonActive: {
+    backgroundColor: 'var(--app-accent)',
     borderColor: 'var(--app-accent)',
-    backgroundColor: 'var(--app-accent-soft)',
   },
-  autoScrollText: {
-    color: 'var(--app-accent)',
-    fontSize: 11,
-    fontWeight: '900',
+  floatingHelpButtonHelpModeLayer: {
+    zIndex: 120,
+    boxShadow: '0 0 0 3px rgba(79, 195, 247, 0.7), 0 16px 36px rgba(0, 0, 0, 0.34)',
   },
 });
 
 const quickControlsStyles = StyleSheet.create({
-  scrollBody: {
-    maxHeight: '72vh',
-    minHeight: 0,
-  },
-  body: {
-    paddingHorizontal: 4,
-    paddingBottom: 12,
-    gap: 10,
-  },
-  section: {
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: 'var(--app-border-soft)',
-    backgroundColor: 'rgba(255,255,255,0.015)',
-    padding: 9,
-    gap: 8,
-  },
-  sectionTitle: {
-    color: 'var(--app-muted-text)',
-    fontSize: 10,
-    fontWeight: '900',
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-  },
-  navRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  navButton: {
-    flex: 1,
-    minHeight: 44,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: 'var(--app-border-soft)',
-    backgroundColor: 'var(--app-header)',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-  },
-  navButtonPrimary: {
-    borderColor: 'var(--app-accent)',
-    backgroundColor: 'var(--app-accent-soft)',
-  },
-  navButtonText: {
-    color: 'var(--app-text)',
-    fontSize: 14,
-    fontWeight: '900',
-  },
-  disabledButton: {
-    opacity: 0.46,
-  },
-  disabledText: {
-    color: 'var(--app-muted-text)',
-  },
-  featureButton: {
-    minHeight: 54,
-    borderRadius: 13,
-    borderWidth: 1,
-    borderColor: 'var(--app-border-soft)',
-    backgroundColor: 'var(--app-surface-alt)',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  featureButtonTight: {
-    minHeight: 48,
-    paddingVertical: 8,
-  },
-  featureButtonAccent: {
-    borderColor: 'var(--app-accent)',
-    backgroundColor: 'var(--app-accent-soft)',
-  },
-  compactFeatureButton: {
-    flex: 1,
-    minWidth: 190,
-  },
-  featureIcon: {
-    width: 34,
-    height: 34,
-    borderRadius: 11,
-    borderWidth: 1,
-    borderColor: 'var(--app-border-soft)',
-    backgroundColor: 'var(--app-surface-soft)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  featureIconAccent: {
-    borderColor: 'var(--app-accent)',
-    backgroundColor: 'var(--app-accent)',
-  },
-  featureTextBlock: {
-    flex: 1,
-    minWidth: 0,
-  },
-  featureTitle: {
-    color: 'var(--app-text)',
-    fontSize: 13,
-    fontWeight: '900',
-  },
-  featureSubtitle: {
-    color: 'var(--app-subtle-text)',
-    fontSize: 11,
-    fontWeight: '700',
-    marginTop: 2,
-  },
-  controlGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  controlPill: {
-    flexGrow: 1,
-    minWidth: 68,
-    minHeight: 34,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: 'var(--app-border-soft)',
-    backgroundColor: 'var(--app-header)',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  controlPillSoft: {
-    borderColor: 'var(--app-accent)',
-    backgroundColor: 'var(--app-accent-soft)',
-  },
-  controlPillWide: {
-    flexBasis: 132,
-    minWidth: 118,
-  },
-  controlPillText: {
-    color: 'var(--app-text)',
-    fontSize: 13,
-    fontWeight: '900',
-  },
-  controlPillAccent: {
-    color: 'var(--app-accent)',
-    fontSize: 13,
-    fontWeight: '900',
-  },
-  actionGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-  },
-  autoScrollBox: {
-    borderRadius: 13,
-    borderWidth: 1,
-    borderColor: 'var(--app-border-soft)',
-    backgroundColor: 'var(--app-surface-alt)',
-    paddingHorizontal: 10,
-    paddingVertical: 9,
-    gap: 8,
-  },
-  autoScrollHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
-  },
-  autoScrollCustomHeaderButton: {
-    minWidth: 128,
-    minHeight: 38,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: 'var(--app-border-soft)',
-    backgroundColor: 'var(--app-header)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 12,
-    flexShrink: 0,
-  },
-  autoScrollToggle: {
-    minWidth: 86,
-    minHeight: 38,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: 'var(--app-accent)',
-    backgroundColor: 'var(--app-accent-soft)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 14,
-  },
-  autoScrollToggleActive: {
-    backgroundColor: 'var(--app-header)',
-  },
-  autoScrollToggleText: {
-    color: 'var(--app-accent)',
-    fontSize: 13,
-    fontWeight: '900',
-  },
-  autoScrollSectionTitle: {
-    color: 'var(--app-text)',
-    fontSize: 12,
-    fontWeight: '900',
-    marginTop: 2,
-  },
-  autoScrollPresetRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  autoScrollPreset: {
-    flexGrow: 1,
-    flexBasis: 92,
-    minWidth: 82,
-    minHeight: 46,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: 'var(--app-border-soft)',
-    backgroundColor: 'var(--app-header)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 10,
-  },
-  autoScrollPresetActive: {
-    borderColor: 'var(--app-accent)',
-    backgroundColor: 'var(--app-accent-soft)',
-  },
-  autoScrollCustomPreset: {
-    flexBasis: 'auto',
-    width: '100%',
-    minHeight: 42,
-  },
-  autoScrollPresetText: {
-    color: 'var(--app-text)',
-    fontSize: 12,
-    fontWeight: '900',
-  },
-  autoScrollPresetHint: {
-    color: 'var(--app-muted-text)',
-    fontSize: 10,
-    fontWeight: '800',
-    marginTop: 2,
-  },
-  autoScrollPresetTextActive: {
-    color: 'var(--app-accent)',
-  },
   customSpeedBox: {
     gap: 8,
   },
@@ -2741,113 +2155,6 @@ const quickControlsStyles = StyleSheet.create({
   customModalSaveText: {
     color: '#051014',
     fontSize: 13,
-    fontWeight: '900',
-  },
-  audioSection: {
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: 'var(--app-border-soft)',
-    backgroundColor: 'var(--app-header)',
-    padding: 8,
-  },
-  listSongRow: {
-    minHeight: 54,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'var(--app-border-soft)',
-    backgroundColor: 'var(--app-surface-alt)',
-    paddingHorizontal: 11,
-    paddingVertical: 9,
-    marginBottom: 8,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  listSongRowActive: {
-    borderColor: 'var(--app-accent)',
-    backgroundColor: 'var(--app-accent-soft)',
-  },
-  listSongIndex: {
-    width: 26,
-    height: 26,
-    borderRadius: 9,
-    borderWidth: 1,
-    borderColor: 'var(--app-border-soft)',
-    color: 'var(--app-muted-text)',
-    fontSize: 12,
-    fontWeight: '900',
-    textAlign: 'center',
-    lineHeight: 24,
-    flexShrink: 0,
-  },
-  listSongIndexActive: {
-    borderColor: 'var(--app-accent)',
-    color: 'var(--app-accent)',
-  },
-  listSongTextBlock: {
-    flex: 1,
-    minWidth: 0,
-  },
-  listSongTitle: {
-    color: 'var(--app-text)',
-    fontSize: 13,
-    fontWeight: '900',
-  },
-  listSongTitleActive: {
-    color: 'var(--app-accent)',
-  },
-  listSongArtist: {
-    color: 'var(--app-muted-text)',
-    fontSize: 11,
-    fontWeight: '700',
-    marginTop: 2,
-  },
-  addToPlaylistRow: {
-    minHeight: 58,
-    borderRadius: 13,
-    borderWidth: 1,
-    borderColor: 'var(--app-border-soft)',
-    backgroundColor: 'var(--app-surface-alt)',
-    paddingHorizontal: 11,
-    paddingVertical: 9,
-    marginBottom: 8,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  addToPlaylistRowDisabled: {
-    opacity: 0.72,
-    backgroundColor: 'var(--app-header)',
-  },
-  addToPlaylistTextMuted: {
-    color: 'var(--app-muted-text)',
-  },
-  addToPlaylistStatus: {
-    minWidth: 96,
-    alignItems: 'flex-end',
-    justifyContent: 'center',
-    flexShrink: 0,
-    gap: 2,
-  },
-  addToPlaylistStatusText: {
-    color: 'var(--app-accent)',
-    fontSize: 11,
-    fontWeight: '900',
-    textAlign: 'right',
-  },
-  addToPlaylistStatusDone: {
-    color: 'var(--app-muted-text)',
-  },
-  removeFromPlaylistButton: {
-    minHeight: 20,
-    borderRadius: 999,
-    paddingHorizontal: 4,
-    alignItems: 'flex-end',
-    justifyContent: 'center',
-  },
-  removeFromPlaylistText: {
-    color: '#f87171',
-    fontSize: 11,
     fontWeight: '900',
   },
 });

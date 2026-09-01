@@ -1,27 +1,25 @@
 ﻿import React, { useEffect, useState } from 'react';
-import { FlatList, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native-web';
-import { ChevronRight, Folder as FolderIcon, FolderInput, FolderPlus, ListMusic, Pencil, Plus, Search, Share2, Trash2 } from 'lucide-react';
+import { FlatList, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native-web';
+import { ChevronRight, Copy, Folder as FolderIcon, FolderInput, FolderPlus, ListMusic, Pencil, Plus, Search, Share2, Star, Trash2 } from 'lucide-react';
 import { useConfirmDestructiveAction } from '../components/ConfirmDialog';
 import { useGenreFilter } from '../contexts/GenreFilterContext';
 import { AppModal } from '../components/AppModal';
 import { useManualNavigation } from '../contexts/ManualNavigationContext';
+import { useSettings } from '../contexts/SettingsContext';
 import { useTopBarControls } from '../contexts/TopBarContext';
 import { db } from '../services/storage';
 import { buildCifrasGoFolderBackupZip } from '../services/backup';
 import { buildPlaylistZip, sanitizeFileName, shareBlobFile } from '../services/share';
 import type { Folder, Playlist, Song } from '../types/models';
+import { sortFolderPlaylistDisplayItems, type FolderPlaylistDisplayItem } from '../utils/folderPlaylistDisplay';
 import { getDescendantFolderIds, matchesGenreFilter, playlistMatchesGenreFilter } from '../utils/genres';
-
-type FolderListItem =
-  | { type: 'folder'; folder: Folder }
-  | { type: 'playlist'; playlist: Playlist };
+import { createDuplicatedPlaylist, insertPlaylistAfterSource } from '../utils/playlistDuplication';
+import { toggleStarredFolder, toggleStarredPlaylist } from '../utils/starredItems';
+import { useDevScreenPerformance } from '../utils/devPerformance';
 
 interface FoldersScreenProps {
   styles: any;
 }
-
-const sortByName = <T extends { name: string }>(items: T[]) =>
-  [...items].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR', { sensitivity: 'base', numeric: true }));
 
 const getFolderDepth = (folderId: string, folders: Folder[]) => {
   const byId = new Map(folders.map((folder) => [folder.id, folder]));
@@ -88,12 +86,20 @@ const renderFolderHierarchyIcon = (depth: number, size = 16) => {
   );
 };
 
+const renderFolderListIconTile = (icon: React.ReactNode) => (
+  <View style={localStyles.listIconTile}>
+    {icon}
+  </View>
+);
+
 export function FoldersScreen({
   styles,
 }: FoldersScreenProps) {
+  useDevScreenPerformance('Folders');
   const nav = useManualNavigation();
   const { setTopBarControls, clearTopBarControls } = useTopBarControls();
   const { globalFilters } = useGenreFilter();
+  const { favoriteMode, folderPlaylistDisplayMode } = useSettings();
   const confirmDestructiveAction = useConfirmDestructiveAction();
   const [allFolders, setAllFolders] = useState<Folder[]>([]);
   const [allPlaylists, setAllPlaylists] = useState<Playlist[]>([]);
@@ -117,13 +123,15 @@ export function FoldersScreen({
   const [q, setQ] = useState('');
   const [searchOn, setSearchOn] = useState(false);
   const load = async () => {
-    const allFolders = await db.getFolders();
-    const allPlaylists = await db.getPlaylists();
-    const songs = await db.getSongs();
-    const folderSongEntries = await Promise.all(
-      allFolders.map(async (folder) => [folder.id, await db.getFolderSongIds(folder.id)] as const)
+    const [allFolders, allPlaylists, songs, storedFolderSongMap] = await Promise.all([
+      db.getFolders(),
+      db.getPlaylists(),
+      db.getSongs(),
+      db.getFolderSongMap(),
+    ]);
+    const nextFolderSongMap = Object.fromEntries(
+      allFolders.map((folder) => [folder.id, storedFolderSongMap[folder.id] || []])
     );
-    const nextFolderSongMap = Object.fromEntries(folderSongEntries);
 
     setAllFolders(allFolders);
     setAllPlaylists(allPlaylists);
@@ -195,21 +203,12 @@ export function FoldersScreen({
     if (query && !playlistSearchText(p).includes(query)) return false;
     return playlistMatchesGenreFilter(p, globalFilters.selectedGenres, songsById);
   });
-  const sortedVisibleFolders = sortByName(visibleFolders);
-  const sortedVisiblePlaylists = sortByName(visiblePlaylists);
-  const visibleItems: FolderListItem[] = [
-    ...(viewFilter === 'all' || viewFilter === 'folders'
-      ? sortedVisibleFolders.map((folder) => ({ type: 'folder' as const, folder }))
-      : []),
-    ...(viewFilter === 'all' || viewFilter === 'playlists'
-      ? sortedVisiblePlaylists.map((playlist) => ({ type: 'playlist' as const, playlist }))
-      : []),
-  ].sort((a, b) => {
-    if (viewFilter === 'all' && a.type !== b.type) return a.type === 'folder' ? -1 : 1;
-    const aName = a.type === 'folder' ? a.folder.name : a.playlist.name;
-    const bName = b.type === 'folder' ? b.folder.name : b.playlist.name;
-    return aName.localeCompare(bName, 'pt-BR', { sensitivity: 'base', numeric: true });
-  });
+  const visibleItems: FolderPlaylistDisplayItem[] = sortFolderPlaylistDisplayItems(
+    viewFilter === 'all' || viewFilter === 'folders' ? visibleFolders : [],
+    viewFilter === 'all' || viewFilter === 'playlists' ? visiblePlaylists : [],
+    favoriteMode,
+    folderPlaylistDisplayMode
+  );
   const viewFilterOptions: Array<{ value: typeof viewFilter; label: string }> = [
     { value: 'all', label: 'Tudo' },
     { value: 'playlists', label: 'Listas' },
@@ -222,6 +221,18 @@ export function FoldersScreen({
   const openActionsForFolder = (folder: Folder) => {
     setSelectedFolder(folder);
     setOpenFolderActions(true);
+  };
+  const toggleFolderStar = async (folderId: string) => {
+    const next = toggleStarredFolder(allFolders, folderId, favoriteMode);
+    if (next === allFolders) return;
+    setAllFolders(next);
+    await db.saveFolders(next);
+  };
+  const togglePlaylistStar = async (playlistId: string) => {
+    const next = toggleStarredPlaylist(allPlaylists, playlistId, favoriteMode);
+    if (next === allPlaylists) return;
+    setAllPlaylists(next);
+    await db.savePlaylists(next);
   };
   const folderTargetIdsToSkip = React.useMemo(() => {
     if (!selectedFolder) return new Set<string>();
@@ -308,6 +319,21 @@ export function FoldersScreen({
       title: playlistToShare.name,
       text: `Lista "${playlistToShare.name}" com ${playlistToShare.songIds.length} música${playlistToShare.songIds.length === 1 ? '' : 's'}.`,
       fallbackMessage: 'Não foi possível abrir o compartilhamento nativo. O ZIP da lista foi baixado como alternativa.',
+    });
+  };
+  const duplicateSelectedPlaylist = async () => {
+    if (!selectedPlaylist) return;
+    const rows = await db.getPlaylists();
+    const source = rows.find((playlist) => playlist.id === selectedPlaylist.id) || selectedPlaylist;
+    const duplicate = createDuplicatedPlaylist(source, rows);
+    await db.savePlaylists(insertPlaylistAfterSource(rows, source.id, duplicate));
+    setOpenPlaylistActions(false);
+    setSelectedPlaylist(null);
+    await load();
+    nav.navigate('PlaylistDetail', {
+      playlistId: duplicate.id,
+      playlistName: duplicate.name,
+      folderId: duplicate.folderId ?? null,
     });
   };
   const shareSelectedFolder = async () => {
@@ -420,23 +446,32 @@ export function FoldersScreen({
       </View>
       <FlatList
         data={visibleItems}
-        keyExtractor={(item: FolderListItem) => (item.type === 'folder' ? `folder-${item.folder.id}` : `playlist-${item.playlist.id}`)}
+        keyExtractor={(item: FolderPlaylistDisplayItem) => (item.type === 'folder' ? `folder-${item.folder.id}` : `playlist-${item.playlist.id}`)}
         contentContainerStyle={{ paddingBottom: 120 }}
-        renderItem={({ item }: { item: FolderListItem }) => (
+        renderItem={({ item }: { item: FolderPlaylistDisplayItem }) => (
           item.type === 'folder' ? (
             <View style={styles.listRow}>
               <TouchableOpacity
                 style={styles.cardMainPress}
                 onPress={() => nav.navigate('FolderDetail', { folderId: item.folder.id, folderName: item.folder.name })}
               >
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                  {renderFolderHierarchyIcon(getFolderDepth(item.folder.id, allFolders), 16)}
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                  {renderFolderListIconTile(renderFolderHierarchyIcon(getFolderDepth(item.folder.id, allFolders), 18))}
                   <View style={styles.listRowText}>
                     <Text style={styles.title}>{item.folder.name}</Text>
                     <Text style={styles.subtitle}>{getFolderSubtitle(item.folder)}</Text>
                   </View>
                 </View>
               </TouchableOpacity>
+              {favoriteMode !== 'disabled' ? (
+                <TouchableOpacity style={styles.listActionBtn} onPress={() => toggleFolderStar(item.folder.id)}>
+                  <Star
+                    size={18}
+                    color={item.folder.isStarred ? '#ffd166' : '#777'}
+                    fill={item.folder.isStarred ? '#ffd166' : 'transparent'}
+                  />
+                </TouchableOpacity>
+              ) : null}
               <TouchableOpacity style={styles.listActionBtn} onPress={() => openActionsForFolder(item.folder)}>
                 <ChevronRight size={18} color="#4FC3F7" />
               </TouchableOpacity>
@@ -452,14 +487,23 @@ export function FoldersScreen({
                   })
                 }
               >
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                  <ListMusic size={16} color="#ffd166" />
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                  {renderFolderListIconTile(<ListMusic size={19} color="#ffd166" />)}
                   <View style={styles.listRowText}>
                     <Text style={styles.title}>{item.playlist.name}</Text>
                     <Text style={styles.subtitle}>{getPlaylistSubtitle(item.playlist)}</Text>
                   </View>
                 </View>
               </TouchableOpacity>
+              {favoriteMode !== 'disabled' ? (
+                <TouchableOpacity style={styles.listActionBtn} onPress={() => togglePlaylistStar(item.playlist.id)}>
+                  <Star
+                    size={18}
+                    color={item.playlist.isStarred ? '#ffd166' : '#777'}
+                    fill={item.playlist.isStarred ? '#ffd166' : 'transparent'}
+                  />
+                </TouchableOpacity>
+              ) : null}
               <TouchableOpacity style={styles.listActionBtn} onPress={() => openActionsForPlaylist(item.playlist)}>
                 <ChevronRight size={18} color="#4FC3F7" />
               </TouchableOpacity>
@@ -740,6 +784,13 @@ export function FoldersScreen({
           </View>
           <ChevronRight size={18} color="#777" />
         </TouchableOpacity>
+        <TouchableOpacity style={[styles.modalActionBtn, styles.songActionOptionBtn]} onPress={duplicateSelectedPlaylist}>
+          <View style={styles.createOptionLeft}>
+            <Copy size={17} color="#4FC3F7" />
+            <Text style={styles.modalActionText}>Duplicar lista</Text>
+          </View>
+          <ChevronRight size={18} color="#777" />
+        </TouchableOpacity>
         <TouchableOpacity
           style={[styles.modalActionBtn, styles.songActionOptionBtn, styles.modalDangerBtn]}
           onPress={deleteSelectedPlaylist}
@@ -815,3 +866,18 @@ export function FoldersScreen({
     </View>
   );
 }
+
+const localStyles = StyleSheet.create({
+  listIconTile: {
+    width: 34,
+    height: 34,
+    borderRadius: 5,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(14, 165, 233, 0.10)',
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.22)',
+    boxShadow: '0 10px 20px rgba(14, 165, 233, 0.10)',
+    flexShrink: 0,
+  },
+});

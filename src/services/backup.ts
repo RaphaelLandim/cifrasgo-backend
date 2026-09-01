@@ -1,7 +1,7 @@
 import JSZip from 'jszip';
 import pako from 'pako';
 import type { Folder, Genre, Playlist, PlaylistSection, PlaylistViewMode, Song, SongInput } from '../types/models';
-import { normalizeGenreName } from '../utils/genres';
+import { getSongGenreKeys, normalizeGenreName } from '../utils/genres';
 import { buildCifrasGoSongTextFile, CIFRASGO_SONG_MARKER, parseCifrasGoSongTextFile } from './songTextFormat';
 import { db } from './storage';
 
@@ -22,6 +22,13 @@ export interface RestoreSongTextResult {
   message: string;
   songId: string;
   action: 'created' | 'updated';
+}
+
+export interface CustomBackupSelection {
+  songIds: string[];
+  artistNames: string[];
+  playlistIds: string[];
+  folderIds: string[];
 }
 
 const uid = () => Math.random().toString(36).slice(2, 11);
@@ -56,6 +63,7 @@ interface CifrasGoPlaylistManifestSong {
   observation?: string;
   content: string;
   sourceUrl?: string;
+  youtubeUrl?: string;
   preferredFontSize?: number;
   updatedAt?: number;
 }
@@ -313,6 +321,7 @@ const toSongInput = (song: CifrasGoPlaylistManifestSong): SongInput => ({
   observation: song.observation,
   content: song.content || '',
   sourceUrl: song.sourceUrl,
+  youtubeUrl: song.youtubeUrl,
   preferredFontSize: song.preferredFontSize,
 });
 
@@ -372,6 +381,50 @@ const getDescendantFolderIdsForBackup = (folders: Folder[], folderId: string): s
   return children.flatMap((folder) => [folder.id, ...getDescendantFolderIdsForBackup(folders, folder.id)]);
 };
 
+const getAncestorFolderIdsForBackup = (foldersById: Map<string, Folder>, folderId: string | null | undefined): string[] => {
+  const ids: string[] = [];
+  const visited = new Set<string>();
+  let currentId = folderId ?? null;
+
+  while (currentId && !visited.has(currentId)) {
+    visited.add(currentId);
+    const folder = foldersById.get(currentId);
+    if (!folder) break;
+    ids.unshift(folder.id);
+    currentId = folder.parentId ?? null;
+  }
+
+  return ids;
+};
+
+const getPlaylistSongIdsForBackup = (playlist: Playlist): string[] =>
+  uniqueStrings([
+    ...safeStringArray(playlist.songIds),
+    ...normalizeImportedSections(playlist.sections).flatMap((section) => section.songIds),
+  ]);
+
+const appendReadableBackupFiles = (
+  zip: JSZip,
+  songs: Song[],
+  playlists: Playlist[],
+  folders: Folder[]
+) => {
+  const songsById = new Map(songs.map((song) => [song.id, song]));
+  const foldersById = new Map(folders.map((folder) => [folder.id, folder]));
+
+  songs.forEach((song, index) => {
+    const prefix = String(index + 1).padStart(3, '0');
+    const name = sanitizeBackupFileName(`${song.title || 'musica'}${song.artist ? ` - ${song.artist}` : ''}`);
+    zip.file(`readable/musicas/${prefix} - ${name}.txt`, buildCifrasGoSongTextFile(song));
+  });
+
+  playlists.forEach((playlist, index) => {
+    const prefix = String(index + 1).padStart(3, '0');
+    const name = sanitizeBackupFileName(playlist.name || 'lista');
+    zip.file(`readable/listas/${prefix} - ${name}.txt`, buildReadablePlaylistText(playlist, songsById, foldersById));
+  });
+};
+
 export const buildCifrasGoFullBackupZip = async (): Promise<Blob> => {
   const [
     songs,
@@ -424,19 +477,107 @@ export const buildCifrasGoFullBackupZip = async (): Promise<Blob> => {
   zip.file('data/genres.json', JSON.stringify(genres, null, 2));
   zip.file('data/settings.json', JSON.stringify(settings, null, 2));
 
-  songs.forEach((song, index) => {
-    const prefix = String(index + 1).padStart(3, '0');
-    const name = sanitizeBackupFileName(`${song.title || 'musica'}${song.artist ? ` - ${song.artist}` : ''}`);
-    zip.file(`readable/musicas/${prefix} - ${name}.txt`, buildCifrasGoSongTextFile(song));
+  appendReadableBackupFiles(zip, songs, playlists, folders);
+
+  return zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+};
+
+export const buildCifrasGoCustomBackupZip = async (selection: CustomBackupSelection): Promise<Blob> => {
+  const [songs, folders, playlists, folderSongs, genres] = await Promise.all([
+    db.getSongs(),
+    db.getFolders(),
+    db.getPlaylists(),
+    db.getFolderSongMap(),
+    db.getGenres(),
+  ]);
+
+  const selectedSongIds = new Set(safeStringArray(selection.songIds));
+  const selectedArtistNames = new Set(safeStringArray(selection.artistNames).map((name) => name.trim().toLowerCase()));
+  const selectedPlaylistIds = new Set(safeStringArray(selection.playlistIds));
+  const selectedRootFolderIds = new Set(safeStringArray(selection.folderIds));
+  const foldersById = new Map(folders.map((folder) => [folder.id, folder]));
+
+  songs.forEach((song) => {
+    if (selectedArtistNames.has((song.artist || '').trim().toLowerCase())) {
+      selectedSongIds.add(song.id);
+    }
   });
 
-  const songsById = new Map(songs.map((song) => [song.id, song]));
-  const foldersById = new Map(folders.map((folder) => [folder.id, folder]));
-  playlists.forEach((playlist, index) => {
-    const prefix = String(index + 1).padStart(3, '0');
-    const name = sanitizeBackupFileName(playlist.name || 'lista');
-    zip.file(`readable/listas/${prefix} - ${name}.txt`, buildReadablePlaylistText(playlist, songsById, foldersById));
+  const exportedFolderContentIds = new Set<string>();
+  selectedRootFolderIds.forEach((folderId) => {
+    if (!foldersById.has(folderId)) return;
+    exportedFolderContentIds.add(folderId);
+    getDescendantFolderIdsForBackup(folders, folderId).forEach((id) => exportedFolderContentIds.add(id));
   });
+
+  const exportedPlaylistIds = new Set<string>(selectedPlaylistIds);
+  playlists.forEach((playlist) => {
+    if (playlist.folderId && exportedFolderContentIds.has(playlist.folderId)) {
+      exportedPlaylistIds.add(playlist.id);
+    }
+  });
+
+  const exportedPlaylists = playlists.filter((playlist) => exportedPlaylistIds.has(playlist.id));
+  exportedPlaylists.forEach((playlist) => {
+    getPlaylistSongIdsForBackup(playlist).forEach((songId) => selectedSongIds.add(songId));
+  });
+
+  Object.entries(folderSongs).forEach(([folderId, ids]) => {
+    if (!exportedFolderContentIds.has(folderId)) return;
+    safeStringArray(ids).forEach((songId) => selectedSongIds.add(songId));
+  });
+
+  const exportedFolderIds = new Set<string>(exportedFolderContentIds);
+  exportedPlaylists.forEach((playlist) => {
+    getAncestorFolderIdsForBackup(foldersById, playlist.folderId).forEach((id) => exportedFolderIds.add(id));
+  });
+  exportedFolderContentIds.forEach((folderId) => {
+    getAncestorFolderIdsForBackup(foldersById, folderId).forEach((id) => exportedFolderIds.add(id));
+  });
+
+  const exportedSongs = songs.filter((song) => selectedSongIds.has(song.id));
+  if (!exportedSongs.length && !exportedPlaylists.length && !exportedFolderIds.size) {
+    throw new Error('Selecione pelo menos um item para gerar o backup personalizado.');
+  }
+
+  const exportedSongIds = new Set(exportedSongs.map((song) => song.id));
+  const exportedFolders = folders.filter((folder) => exportedFolderIds.has(folder.id));
+  const exportedFolderSongs = Object.fromEntries(
+    Object.entries(folderSongs)
+      .filter(([folderId]) => exportedFolderContentIds.has(folderId))
+      .map(([folderId, ids]) => [folderId, safeStringArray(ids).filter((songId) => exportedSongIds.has(songId))])
+      .filter(([, ids]) => ids.length > 0)
+  );
+  const exportedGenres = genres.filter((genre) => {
+    const key = normalizeGenreName(genre.name);
+    return exportedSongs.some((song) => getSongGenreKeys(song).includes(key));
+  });
+
+  const zip = new JSZip();
+  const manifest: CifrasGoFullBackupManifest = {
+    app: 'CifrasGo',
+    format: 'full-backup',
+    version: 1,
+    createdAt: Date.now(),
+    contains: {
+      songs: exportedSongs.length > 0,
+      folders: exportedFolders.length > 0,
+      playlists: exportedPlaylists.length > 0,
+      folderSongs: Object.keys(exportedFolderSongs).length > 0,
+      genres: exportedGenres.length > 0,
+      displaySettings: false,
+      themeSettings: false,
+      globalFilters: false,
+    },
+  };
+
+  zip.file(CIFRASGO_FULL_BACKUP_MANIFEST, JSON.stringify(manifest, null, 2));
+  zip.file('data/songs.json', JSON.stringify(exportedSongs, null, 2));
+  zip.file('data/folders.json', JSON.stringify(exportedFolders, null, 2));
+  zip.file('data/playlists.json', JSON.stringify(exportedPlaylists, null, 2));
+  zip.file('data/folder-songs.json', JSON.stringify(exportedFolderSongs, null, 2));
+  zip.file('data/genres.json', JSON.stringify(exportedGenres, null, 2));
+  appendReadableBackupFiles(zip, exportedSongs, exportedPlaylists, exportedFolders);
 
   return zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
 };

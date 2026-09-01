@@ -1,11 +1,15 @@
 import React from 'react';
 import { useGenreFilter } from './GenreFilterContext';
 import { db } from '../services/storage';
+import type { LastOpenedPlaylist } from '../types/models';
 import { matchesGenreFilter, playlistMatchesGenreFilter } from '../utils/genres';
 
 interface DrawerStats {
   songs: number;
   playlists: number;
+  artists: number;
+  folders: number;
+  lastOpenedPlaylist: LastOpenedPlaylist | null;
 }
 
 interface DrawerContextValue {
@@ -20,7 +24,13 @@ const DrawerContext = React.createContext<DrawerContextValue | null>(null);
 export function DrawerProvider({ children }: { children: React.ReactNode }) {
   const { globalFilters } = useGenreFilter();
   const [drawerOpen, setDrawerOpen] = React.useState(false);
-  const [drawerStats, setDrawerStats] = React.useState<DrawerStats>({ songs: 0, playlists: 0 });
+  const [drawerStats, setDrawerStats] = React.useState<DrawerStats>({
+    songs: 0,
+    playlists: 0,
+    artists: 0,
+    folders: 0,
+    lastOpenedPlaylist: null,
+  });
 
   const openDrawer = React.useCallback(() => {
     setDrawerOpen(true);
@@ -34,13 +44,37 @@ export function DrawerProvider({ children }: { children: React.ReactNode }) {
     if (!drawerOpen) return;
     let isActive = true;
 
-    Promise.all([db.getSongs(), db.getPlaylists()]).then(([songs, playlists]) => {
+    Promise.all([
+      db.getSongs(),
+      db.getPlaylists(),
+      db.getFolders(),
+      db.getLastOpenedPlaylist(),
+    ]).then(([songs, playlists, folders, lastOpened]) => {
       if (!isActive) return;
       const songsById = new Map(songs.map((song) => [song.id, song]));
       const selectedGenres = globalFilters.selectedGenres;
+      const visibleSongs = songs.filter((song) => matchesGenreFilter(song, selectedGenres));
+      const currentPlaylist = lastOpened
+        ? playlists.find((playlist) => playlist.id === lastOpened.playlistId)
+        : null;
+
+      if (lastOpened && !currentPlaylist) {
+        void db.clearLastOpenedPlaylist();
+      }
+
       setDrawerStats({
-        songs: songs.filter((song) => matchesGenreFilter(song, selectedGenres)).length,
+        songs: visibleSongs.length,
         playlists: playlists.filter((playlist) => playlistMatchesGenreFilter(playlist, selectedGenres, songsById)).length,
+        artists: new Set(visibleSongs.map((song) => song.artist?.trim() || 'Sem artista')).size,
+        folders: folders.length,
+        lastOpenedPlaylist: currentPlaylist
+          ? {
+              playlistId: currentPlaylist.id,
+              playlistName: currentPlaylist.name,
+              folderId: currentPlaylist.folderId ?? null,
+              updatedAt: lastOpened?.updatedAt ?? Date.now(),
+            }
+          : null,
       });
     });
 

@@ -4,6 +4,7 @@ import {
   Platform,
   SafeAreaView,
   StyleSheet,
+  Text,
 } from 'react-native-web';
 import { App as CapacitorApp } from '@capacitor/app';
 import { AppDrawer } from './components/AppDrawer';
@@ -27,19 +28,24 @@ import { getManualBackTarget, getManualRouteTitle } from './navigation/manualRou
 import { subscribeToIncomingImportUrls } from './services/linking';
 import { db } from './services/storage';
 import { SongsScreen } from './screens/SongsScreen';
-import { SongDetailScreen } from './screens/SongDetailScreen';
-import { SongEditorScreen } from './screens/SongEditorScreen';
-import { ArtistsScreen } from './screens/ArtistsScreen';
-import { ArtistDetailScreen } from './screens/ArtistDetailScreen';
-import { ImportScreen } from './screens/ImportScreen';
-import { BackupScreen } from './screens/BackupScreen';
-import { FoldersScreen } from './screens/FoldersScreen';
-import { FolderDetailScreen } from './screens/FolderDetailScreen';
-import { PlaylistDetailScreen } from './screens/PlaylistDetailScreen';
-import { PlaylistStructureScreen } from './screens/PlaylistStructureScreen';
-import { SettingsScreen } from './screens/SettingsScreen';
 import { HomeDashboardScreen } from './screens/HomeDashboardScreen';
-import { AboutScreen } from './screens/AboutScreen';
+import { markDevRouteStart } from './utils/devPerformance';
+
+const SongDetailScreen = React.lazy(() => import('./screens/SongDetailScreen').then((module) => ({ default: module.SongDetailScreen })));
+const SongEditorScreen = React.lazy(() => import('./screens/SongEditorScreen').then((module) => ({ default: module.SongEditorScreen })));
+const ArtistsScreen = React.lazy(() => import('./screens/ArtistsScreen').then((module) => ({ default: module.ArtistsScreen })));
+const ArtistDetailScreen = React.lazy(() => import('./screens/ArtistDetailScreen').then((module) => ({ default: module.ArtistDetailScreen })));
+const ImportScreen = React.lazy(() => import('./screens/ImportScreen').then((module) => ({ default: module.ImportScreen })));
+const BackupScreen = React.lazy(() => import('./screens/BackupScreen').then((module) => ({ default: module.BackupScreen })));
+const FoldersScreen = React.lazy(() => import('./screens/FoldersScreen').then((module) => ({ default: module.FoldersScreen })));
+const FolderDetailScreen = React.lazy(() => import('./screens/FolderDetailScreen').then((module) => ({ default: module.FolderDetailScreen })));
+const PlaylistDetailScreen = React.lazy(() => import('./screens/PlaylistDetailScreen').then((module) => ({ default: module.PlaylistDetailScreen })));
+const PlaylistStructureScreen = React.lazy(() => import('./screens/PlaylistStructureScreen').then((module) => ({ default: module.PlaylistStructureScreen })));
+const PdfViewerScreen = React.lazy(() => import('./screens/PdfViewerScreen').then((module) => ({ default: module.PdfViewerScreen })));
+const SettingsScreen = React.lazy(() => import('./screens/SettingsScreen').then((module) => ({ default: module.SettingsScreen })));
+const RepertoireStatsScreen = React.lazy(() => import('./screens/RepertoireStatsScreen').then((module) => ({ default: module.RepertoireStatsScreen })));
+const AboutScreen = React.lazy(() => import('./screens/AboutScreen').then((module) => ({ default: module.AboutScreen })));
+const BulkGenreOrganizerScreen = React.lazy(() => import('./screens/BulkGenreOrganizerScreen').then((module) => ({ default: module.BulkGenreOrganizerScreen })));
 
 const SONG_DETAIL_CONTROLS_VISIBLE_KEY = '@song_detail_controls_visible';
 const ROUTE_HISTORY_LIMIT = 80;
@@ -62,6 +68,8 @@ function getManualRouteIdentity(route: ManualRoute): string {
       return `${route.name}:${route.params.playlistId}`;
     case 'PlaylistStructure':
       return `${route.name}:${route.params.playlistId}`;
+    case 'PdfViewer':
+      return `${route.name}:${route.params.pdfId}:${route.params.sourcePlaylistId ?? ''}`;
     case 'SongDetail':
       return `${route.name}:${route.params.id}`;
     case 'SongEditor':
@@ -76,6 +84,14 @@ function getManualRouteIdentity(route: ManualRoute): string {
 function isSameManualRoute(a: ManualRoute | null | undefined, b: ManualRoute | null | undefined): boolean {
   if (!a || !b) return false;
   return getManualRouteIdentity(a) === getManualRouteIdentity(b);
+}
+
+function RouteLoadingFallback() {
+  return (
+    <SafeAreaView style={styles.routeLoading}>
+      <Text style={styles.routeLoadingText}>Carregando...</Text>
+    </SafeAreaView>
+  );
 }
 
 export default function App() {
@@ -105,6 +121,11 @@ function AppContent() {
   const [folderHeaderMeta, setFolderHeaderMeta] = useState<{ title?: string; subtitle?: string }>({});
   const routeRef = React.useRef(route);
   const routeHistoryRef = React.useRef(routeHistory);
+  const songsScreenSessionRef = React.useRef({
+    query: '',
+    searchOn: false,
+    scrollOffset: 0,
+  });
   const startupRouteOverriddenRef = React.useRef(false);
   const { drawerOpen, drawerStats, openDrawer, closeDrawer } = useDrawer();
   const { topBarControls, songEditorHeaderControls } = useTopBarState();
@@ -120,6 +141,7 @@ function AppContent() {
   }, [routeHistory]);
 
   const replaceRoute = React.useCallback((nextRoute: ManualRoute, options?: { clearHistory?: boolean }) => {
+    markDevRouteStart(nextRoute.name);
     routeRef.current = nextRoute;
     if (options?.clearHistory) {
       routeHistoryRef.current = [];
@@ -135,6 +157,8 @@ function AppContent() {
     if (isSameManualRoute(currentRoute, nextRoute)) {
       return;
     }
+
+    markDevRouteStart(nextRoute.name);
 
     const currentHistory = routeHistoryRef.current;
     const previousRoute = currentHistory[currentHistory.length - 1];
@@ -277,8 +301,10 @@ function AppContent() {
       active = false;
     };
   }, [route]);
-  const headerTitle = route.name === 'FolderDetail' ? folderHeaderMeta.title || title : title;
-  const headerSubtitle = route.name === 'FolderDetail' ? folderHeaderMeta.subtitle : undefined;
+  const songHeaderTitle = route.name === 'SongDetail' ? topBarControls?.headerTitle : undefined;
+  const songHeaderSubtitle = route.name === 'SongDetail' ? topBarControls?.headerSubtitle : undefined;
+  const headerTitle = songHeaderTitle ?? (route.name === 'FolderDetail' ? folderHeaderMeta.title || title : title);
+  const headerSubtitle = songHeaderSubtitle ?? (route.name === 'FolderDetail' ? folderHeaderMeta.subtitle : undefined);
   const rootRoute = React.useMemo(() => getRootRoute(homeDashboardOnStart), [homeDashboardOnStart]);
 
   const backTarget: ManualRoute | null = React.useMemo(
@@ -389,6 +415,7 @@ function AppContent() {
         title={headerTitle}
         subtitle={headerSubtitle}
         isEditor={route.name === 'SongEditor'}
+        isSongDetail={route.name === 'SongDetail'}
         canGoBack={canNavigateBack}
         songEditorHeaderControls={songEditorHeaderControls}
         topBarControls={topBarControls}
@@ -407,13 +434,18 @@ function AppContent() {
         styles={styles}
       />
 
+      <React.Suspense fallback={<RouteLoadingFallback />}>
       {route.name === 'Songs' && (
         <SongsScreen
           styles={styles}
+          sessionState={songsScreenSessionRef.current}
         />
       )}
       {route.name === 'HomeDashboard' && (
         <HomeDashboardScreen />
+      )}
+      {route.name === 'RepertoireStats' && (
+        <RepertoireStatsScreen />
       )}
       {route.name === 'Artists' && (
         <ArtistsScreen
@@ -431,6 +463,9 @@ function AppContent() {
           songs={[]}
           styles={styles}
         />
+      )}
+      {route.name === 'BulkGenreOrganizer' && (
+        <BulkGenreOrganizerScreen />
       )}
       {route.name === 'About' && (
         <AboutScreen />
@@ -495,6 +530,15 @@ function AppContent() {
           styles={styles}
         />
       )}
+      {route.name === 'PdfViewer' && (
+        <PdfViewerScreen
+          pdfId={route.params.pdfId}
+          returnTo={route.params.returnTo as ManualRoute | undefined}
+          sourcePlaylistId={route.params.sourcePlaylistId}
+          sourcePlaylistName={route.params.sourcePlaylistName}
+        />
+      )}
+      </React.Suspense>
       </>
       )}
     </SafeAreaView>
@@ -504,6 +548,8 @@ function AppContent() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: 'var(--app-bg)' },
+  routeLoading: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: 'var(--app-bg)' },
+  routeLoadingText: { color: 'var(--app-muted-text)', fontSize: 14, fontWeight: '800' },
   songDetailContainer: { minHeight: 0, overflow: 'hidden' as any },
   songDetailScroll: { flex: 1, minHeight: 0, paddingHorizontal: 12 },
   header: {
@@ -530,6 +576,18 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
     textAlign: 'center',
     maxWidth: '100%',
+  },
+  songHeaderTitleBlock: {
+    alignItems: 'flex-start',
+    paddingLeft: 8,
+    
+  },
+  songHeaderTitle: {
+    textAlign: 'left',
+  },
+  songHeaderSubtitle: {
+    left: 8,
+    textAlign: 'left',
   },
   headerActionGroup: { flexDirection: 'row', gap: 8 },
   iconBtn: { width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center', backgroundColor: 'var(--app-surface)', borderWidth: 1, borderColor: 'var(--app-border)' },
@@ -1082,13 +1140,6 @@ const styles = StyleSheet.create({
     color: 'var(--app-subtle-text)',
     fontSize: 11,
     marginTop: 2,
-  },
-  songObservation: {
-    color: 'var(--app-muted-text)',
-    fontSize: 13,
-    marginHorizontal: 12,
-    marginBottom: 10,
-    fontStyle: 'italic',
   },
   screenTitle: { color: 'var(--app-text)', fontSize: 20, fontWeight: '700', marginHorizontal: 12, marginBottom: 8 },
   back: { color: 'var(--app-accent)', margin: 12 },

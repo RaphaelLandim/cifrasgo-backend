@@ -1,7 +1,8 @@
 ﻿import React, { useEffect, useState } from 'react';
-import { ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native-web';
+import { FlatList, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native-web';
 import {
   ChevronRight,
+  Copy,
   Folder as FolderIcon,
   FolderPlus,
   List,
@@ -10,19 +11,37 @@ import {
   Plus,
   Search,
   Share2,
+  Star,
+  StarOff,
   Trash2,
 } from 'lucide-react';
 
 import { AppModal } from '../components/AppModal';
 import { useConfirmDestructiveAction } from '../components/ConfirmDialog';
+import { PlaylistPickerModal } from '../components/modals/PlaylistPickerModal';
 import { useGenreFilter } from '../contexts/GenreFilterContext';
 import { useManualNavigation } from '../contexts/ManualNavigationContext';
+import { useSettings } from '../contexts/SettingsContext';
 import { useTopBarControls } from '../contexts/TopBarContext';
 import type { ManualRoute } from '../navigation/manualTypes';
+import { buildCifrasGoFolderBackupZip } from '../services/backup';
 import { db } from '../services/storage';
 import { buildPlaylistZip, sanitizeFileName, shareBlobFile } from '../services/share';
 import type { Folder, Playlist, Song } from '../types/models';
+import { sortFolderPlaylistDisplayItems, type FolderPlaylistDisplayItem } from '../utils/folderPlaylistDisplay';
 import { getDescendantFolderIds, matchesGenreFilter, playlistMatchesGenreFilter } from '../utils/genres';
+import { createDuplicatedPlaylist, insertPlaylistAfterSource } from '../utils/playlistDuplication';
+import { sortStarredItems, toggleStarredFolder, toggleStarredPlaylist } from '../utils/starredItems';
+import { useDevScreenPerformance } from '../utils/devPerformance';
+
+type FolderDisplayItem = Extract<FolderPlaylistDisplayItem, { type: 'folder' }>;
+type PlaylistDisplayItem = Extract<FolderPlaylistDisplayItem, { type: 'playlist' }>;
+type FolderDetailListRow =
+  | { key: string; type: 'label'; label: string; marginTop: number }
+  | { key: string; type: 'empty'; label: string }
+  | { key: string; type: 'folder'; item: FolderDisplayItem }
+  | { key: string; type: 'playlist'; item: PlaylistDisplayItem }
+  | { key: string; type: 'song'; song: Song };
 
 const getFolderDepth = (folderId: string, folders: Folder[]) => {
   const byId = new Map(folders.map((folder) => [folder.id, folder]));
@@ -139,9 +158,11 @@ export function FolderDetailScreen({
   openAddOnEnter,
   styles,
 }: FolderDetailScreenProps) {
+  useDevScreenPerformance('FolderDetail');
   const nav = useManualNavigation();
   const { setTopBarControls, clearTopBarControls } = useTopBarControls();
   const { globalFilters } = useGenreFilter();
+  const { favoriteMode, folderPlaylistDisplayMode } = useSettings();
   const songReturnTo: ManualRoute = React.useMemo(
     () => ({ name: 'FolderDetail', params: { folderId, folderName: currentFolderName } }),
     [currentFolderName, folderId]
@@ -184,22 +205,34 @@ export function FolderDetailScreen({
   const [openRenamePlaylistItem, setOpenRenamePlaylistItem] = useState(false);
   const [selectedPlaylistItem, setSelectedPlaylistItem] = useState<Playlist | null>(null);
   const [playlistItemRenameName, setPlaylistItemRenameName] = useState('');
+  const [selectedFolderSong, setSelectedFolderSong] = useState<Song | null>(null);
+  const [openFolderSongActions, setOpenFolderSongActions] = useState(false);
+  const [folderSongPlaylistOpen, setFolderSongPlaylistOpen] = useState(false);
+  const [folderSongPlaylistQuery, setFolderSongPlaylistQuery] = useState('');
+  const [folderSongPlaylistRows, setFolderSongPlaylistRows] = useState<Playlist[]>([]);
+  const [folderSongPlaylistFolders, setFolderSongPlaylistFolders] = useState<Folder[]>([]);
+  const [folderSongSendingPlaylistId, setFolderSongSendingPlaylistId] = useState<string | null>(null);
+  const [folderSongRemovingPlaylistId, setFolderSongRemovingPlaylistId] = useState<string | null>(null);
   const openedAddOnEnterRef = React.useRef(false);
 
   const load = async () => {
-    const allFolders = await db.getFolders();
-    const allPlaylists = await db.getPlaylists();
-    const folderSongEntries = await Promise.all(
-      allFolders.map(async (folder) => [folder.id, await db.getFolderSongIds(folder.id)] as const)
+    const [allFolders, allPlaylists, storedFolderSongMap, songs] = await Promise.all([
+      db.getFolders(),
+      db.getPlaylists(),
+      db.getFolderSongMap(),
+      db.getSongs(),
+    ]);
+    const nextFolderSongMap = Object.fromEntries(
+      allFolders.map((item) => [item.id, storedFolderSongMap[item.id] || []])
     );
     setAllFolders(allFolders);
     setAllPlaylists(allPlaylists);
-    setFolderSongMap(Object.fromEntries(folderSongEntries));
+    setFolderSongMap(nextFolderSongMap);
     setFolder(allFolders.find((f) => f.id === folderId) || null);
-    setSubfolders(await db.getSubfolders(folderId));
+    setSubfolders(allFolders.filter((item) => (item.parentId ?? null) === folderId));
     setPlaylists(allPlaylists.filter((playlist) => playlist.folderId === folderId));
-    setFolderSongIds(await db.getFolderSongIds(folderId));
-    setAllSongs(await db.getSongs());
+    setFolderSongIds(nextFolderSongMap[folderId] || []);
+    setAllSongs(songs);
   };
   useEffect(() => { load(); }, [folderId]);
   const createPlaylist = async () => {
@@ -224,11 +257,25 @@ export function FolderDetailScreen({
     setSelectedPlaylistItem(playlist);
     setOpenPlaylistItemActions(true);
   };
+  const runAfterModalClose = (callback: () => void) => {
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => callback());
+      return;
+    }
+    window.setTimeout(callback, 0);
+  };
+  const openActionsForFolderSong = (song: Song) => {
+    setSelectedFolderSong(song);
+    setOpenFolderSongActions(true);
+  };
   const folderItemTargetIdsToSkip = React.useMemo(() => {
     if (!selectedFolderItem) return new Set<string>();
     return new Set([selectedFolderItem.id, ...getDescendantFolderIds(allFolders, selectedFolderItem.id)]);
   }, [allFolders, selectedFolderItem]);
-  const availableFolderItemTargets = allFolders.filter((folder) => !folderItemTargetIdsToSkip.has(folder.id));
+  const availableFolderItemTargets = sortStarredItems(
+    allFolders.filter((folder) => !folderItemTargetIdsToSkip.has(folder.id)),
+    favoriteMode
+  );
   const renameSelectedFolderItem = async () => {
     if (!selectedFolderItem || !folderItemRenameName.trim()) return;
     const rows = await db.getFolders();
@@ -338,6 +385,60 @@ export function FolderDetailScreen({
       fallbackMessage: 'Não foi possível abrir o compartilhamento nativo. O ZIP da lista foi baixado como alternativa.',
     });
   };
+  const duplicateSelectedPlaylistItem = async () => {
+    if (!selectedPlaylistItem) return;
+    const rows = await db.getPlaylists();
+    const source = rows.find((playlist) => playlist.id === selectedPlaylistItem.id) || selectedPlaylistItem;
+    const duplicate = createDuplicatedPlaylist(source, rows);
+    await db.savePlaylists(insertPlaylistAfterSource(rows, source.id, duplicate));
+    setOpenPlaylistItemActions(false);
+    setSelectedPlaylistItem(null);
+    await load();
+    nav.navigate('PlaylistDetail', {
+      playlistId: duplicate.id,
+      playlistName: duplicate.name,
+      folderId: duplicate.folderId ?? null,
+      folderName: currentFolderName,
+    });
+  };
+  const shareSelectedFolderItem = async () => {
+    if (!selectedFolderItem) return;
+    const folderToShare = selectedFolderItem;
+    setOpenFolderItemActions(false);
+    setSelectedFolderItem(null);
+    const blob = await buildCifrasGoFolderBackupZip(folderToShare.id);
+    const fileName = `${sanitizeFileName(folderToShare.name || 'pasta')}.zip`;
+    await shareBlobFile({
+      blob,
+      fileName,
+      title: folderToShare.name || 'Pasta',
+      text: `Pasta "${folderToShare.name || 'Pasta'}" exportada pelo CifrasGo.`,
+      fallbackMessage: 'Não foi possível abrir o compartilhamento nativo. O ZIP da pasta foi baixado como alternativa.',
+    });
+  };
+  const toggleSelectedFolderItemStar = async () => {
+    if (!selectedFolderItem) return;
+    const folderToToggle = selectedFolderItem;
+    const next = toggleStarredFolder(allFolders, folderToToggle.id, favoriteMode);
+    if (next === allFolders) return;
+    setOpenFolderItemActions(false);
+    setSelectedFolderItem(null);
+    setAllFolders(next);
+    setSubfolders(next.filter((item) => item.parentId === folderId));
+    setFolder(next.find((item) => item.id === folderId) || null);
+    await db.saveFolders(next);
+  };
+  const toggleSelectedPlaylistItemStar = async () => {
+    if (!selectedPlaylistItem) return;
+    const playlistToToggle = selectedPlaylistItem;
+    const next = toggleStarredPlaylist(allPlaylists, playlistToToggle.id, favoriteMode);
+    if (next === allPlaylists) return;
+    setOpenPlaylistItemActions(false);
+    setSelectedPlaylistItem(null);
+    setAllPlaylists(next);
+    setPlaylists(next.filter((item) => item.folderId === folderId));
+    await db.savePlaylists(next);
+  };
 
   const songsById = React.useMemo(() => new Map(allSongs.map((song) => [song.id, song])), [allSongs]);
   const folderMatchesGenreFilter = (targetFolderId: string): boolean => {
@@ -363,6 +464,14 @@ export function FolderDetailScreen({
     playlistMatchesGenreFilter(playlist, globalFilters.selectedGenres, songsById)
   );
   const visibleSubfolders = subfolders.filter((subfolder) => folderMatchesGenreFilter(subfolder.id));
+  const visibleFolderPlaylistItems = sortFolderPlaylistDisplayItems(
+    visibleSubfolders,
+    visiblePlaylists,
+    favoriteMode,
+    folderPlaylistDisplayMode
+  );
+  const visibleFolderItems = visibleFolderPlaylistItems.filter((item): item is FolderDisplayItem => item.type === 'folder');
+  const visiblePlaylistItems = visibleFolderPlaylistItems.filter((item): item is PlaylistDisplayItem => item.type === 'playlist');
   const getFolderDirectStats = (targetFolderId: string) => ({
     songs: folderSongMap[targetFolderId]?.length || 0,
     subfolders: allFolders.filter((item) => item.parentId === targetFolderId).length,
@@ -399,9 +508,29 @@ export function FolderDetailScreen({
       </View>
     );
   };
+  const renderFolderListIconTile = (icon: React.ReactNode) => (
+    <View style={localStyles.listIconTile}>
+      {icon}
+    </View>
+  );
   const getPlaylistOptionSubtitle = (playlist: Playlist) => {
     const parent = playlist.folderId ? allFolders.find((item) => item.id === playlist.folderId) : null;
     return `${parent ? `Lista em ${parent.name}` : 'Lista na raiz'} · ${playlist.songIds.length} ${playlist.songIds.length === 1 ? 'música' : 'músicas'}`;
+  };
+  const toggleFolderItemStar = async (targetFolderId: string) => {
+    const next = toggleStarredFolder(allFolders, targetFolderId, favoriteMode);
+    if (next === allFolders) return;
+    setAllFolders(next);
+    setSubfolders(next.filter((item) => item.parentId === folderId));
+    setFolder(next.find((item) => item.id === folderId) || null);
+    await db.saveFolders(next);
+  };
+  const togglePlaylistItemStar = async (targetPlaylistId: string) => {
+    const next = toggleStarredPlaylist(allPlaylists, targetPlaylistId, favoriteMode);
+    if (next === allPlaylists) return;
+    setAllPlaylists(next);
+    setPlaylists(next.filter((item) => item.folderId === folderId));
+    await db.savePlaylists(next);
   };
   const currentFolderDepth = getFolderDepth(folderId, allFolders);
   const canCreateChildFolder = currentFolderDepth < 3;
@@ -420,18 +549,16 @@ export function FolderDetailScreen({
     return true;
   };
   const availableExistingFolders = allFolders
-    .filter(canMoveExistingFolderIntoCurrent)
-    .sort((a, b) => a.name.localeCompare(b.name, 'pt-BR', { sensitivity: 'base', numeric: true }));
+    .filter(canMoveExistingFolderIntoCurrent);
   const availableExistingPlaylists = allPlaylists
-    .filter((playlist) => playlist.folderId !== folderId)
-    .sort((a, b) => a.name.localeCompare(b.name, 'pt-BR', { sensitivity: 'base', numeric: true }));
+    .filter((playlist) => playlist.folderId !== folderId);
   const existingFolderSearch = normalizeSearchText(existingFolderQuery);
   const existingPlaylistSearch = normalizeSearchText(existingPlaylistQuery);
-  const filteredExistingFolders = availableExistingFolders.filter((folderOption) => {
+  const filteredExistingFolders = sortStarredItems(availableExistingFolders, favoriteMode).filter((folderOption) => {
     if (!existingFolderSearch) return true;
     return normalizeSearchText(`${folderOption.name} ${getFolderOptionSubtitle(folderOption)}`).includes(existingFolderSearch);
   });
-  const filteredExistingPlaylists = availableExistingPlaylists.filter((playlistOption) => {
+  const filteredExistingPlaylists = sortStarredItems(availableExistingPlaylists, favoriteMode).filter((playlistOption) => {
     if (!existingPlaylistSearch) return true;
     return normalizeSearchText(`${playlistOption.name} ${getPlaylistOptionSubtitle(playlistOption)}`).includes(existingPlaylistSearch);
   });
@@ -546,14 +673,68 @@ export function FolderDetailScreen({
   const addSelectedSongsToCurrentFolder = async () => {
     const validSongs = addableSongs.filter((song) => selectedSongIdSet.has(song.id));
     if (!validSongs.length) return;
-    await Promise.all(validSongs.map((song) => db.addSongToFolder(folderId, song.id)));
+    await db.addSongsToFolder(folderId, validSongs.map((song) => song.id));
     closeAddSongModal();
     load();
   };
-  const hasSubfolders = visibleSubfolders.length > 0;
-  const hasPlaylists = visiblePlaylists.length > 0;
+  const hasFolderPlaylistItems = visibleFolderPlaylistItems.length > 0;
   const hasFolderSongs = folderSongs.length > 0;
-  const isEmptyFolder = !hasSubfolders && !hasPlaylists && !hasFolderSongs;
+  const isEmptyFolder = !hasFolderPlaylistItems && !hasFolderSongs;
+  const folderDetailRows = React.useMemo<FolderDetailListRow[]>(() => {
+    const rows: FolderDetailListRow[] = [];
+    const addLabel = (key: string, label: string, marginTop = 0) => {
+      rows.push({ key, type: 'label', label, marginTop });
+    };
+
+    if (hasFolderPlaylistItems) {
+      if (folderPlaylistDisplayMode === 'mixed') {
+        addLabel('label-mixed', 'Pastas/Listas');
+        visibleFolderPlaylistItems.forEach((item) => {
+          rows.push({ key: `${item.type}-${item.type === 'folder' ? item.folder.id : item.playlist.id}`, type: item.type, item } as FolderDetailListRow);
+        });
+      } else {
+        const firstGroup = folderPlaylistDisplayMode === 'playlists_first' ? visiblePlaylistItems : visibleFolderItems;
+        const secondGroup = folderPlaylistDisplayMode === 'playlists_first' ? visibleFolderItems : visiblePlaylistItems;
+        const firstLabel = folderPlaylistDisplayMode === 'playlists_first' ? 'Listas' : 'Subpastas';
+        const secondLabel = folderPlaylistDisplayMode === 'playlists_first' ? 'Subpastas' : 'Listas';
+
+        if (firstGroup.length) {
+          addLabel('label-first', firstLabel);
+          firstGroup.forEach((item) => {
+            rows.push({ key: `${item.type}-${item.type === 'folder' ? item.folder.id : item.playlist.id}`, type: item.type, item } as FolderDetailListRow);
+          });
+        }
+        if (secondGroup.length) {
+          addLabel('label-second', secondLabel, firstGroup.length ? 10 : 0);
+          secondGroup.forEach((item) => {
+            rows.push({ key: `${item.type}-${item.type === 'folder' ? item.folder.id : item.playlist.id}`, type: item.type, item } as FolderDetailListRow);
+          });
+        }
+      }
+    } else if (isEmptyFolder) {
+      addLabel('label-empty-items', 'Pastas/Listas');
+      rows.push({ key: 'empty-items', type: 'empty', label: 'Nenhuma pasta ou lista.' });
+    }
+
+    if (hasFolderSongs) {
+      addLabel('label-songs', 'Músicas na pasta', 10);
+      folderSongs.forEach((song) => rows.push({ key: `song-${song.id}`, type: 'song', song }));
+    } else if (isEmptyFolder) {
+      addLabel('label-empty-songs', 'Músicas na pasta', 10);
+      rows.push({ key: 'empty-songs', type: 'empty', label: 'Nenhuma música nesta pasta.' });
+    }
+
+    return rows;
+  }, [
+    folderPlaylistDisplayMode,
+    folderSongs,
+    hasFolderPlaylistItems,
+    hasFolderSongs,
+    isEmptyFolder,
+    visibleFolderItems,
+    visibleFolderPlaylistItems,
+    visiblePlaylistItems,
+  ]);
   const addModalTitle =
     currentFolderDepth === 1
       ? 'Adicionar à pasta'
@@ -581,6 +762,106 @@ export function FolderDetailScreen({
     await db.removeSongFromFolder(folderId, song.id);
     load();
   };
+  const getFolderSongPlaylistPath = (targetFolderId?: string | null) => {
+    if (!targetFolderId) return '';
+    const byId = new Map(folderSongPlaylistFolders.map((folderOption) => [folderOption.id, folderOption]));
+    const names: string[] = [];
+    const visited = new Set<string>();
+    let current = byId.get(targetFolderId);
+    while (current && !visited.has(current.id)) {
+      visited.add(current.id);
+      names.unshift(current.name);
+      current = current.parentId ? byId.get(current.parentId) : undefined;
+    }
+    return names.join(' / ');
+  };
+  const getFolderSongPlaylistSubtitle = (playlistOption: Playlist) => {
+    const path = getFolderSongPlaylistPath(playlistOption.folderId);
+    const count = playlistOption.songIds.length;
+    return `${path ? `Lista em ${path}` : 'Lista na raiz'} · ${count} ${count === 1 ? 'música' : 'músicas'}`;
+  };
+  const selectedFolderSongAlreadyInPlaylist = (playlistOption: Playlist) =>
+    !!selectedFolderSong && playlistOption.songIds.includes(selectedFolderSong.id);
+  const folderSongPlaylistSearch = normalizeSearchText(folderSongPlaylistQuery);
+  const folderSongPlaylistOptions = sortStarredItems(folderSongPlaylistRows, favoriteMode)
+    .filter((playlistOption) => {
+      if (!folderSongPlaylistSearch) return true;
+      return normalizeSearchText(`${playlistOption.name} ${getFolderSongPlaylistPath(playlistOption.folderId)}`).includes(folderSongPlaylistSearch);
+    });
+  const toggleFolderSongPlaylistStar = (playlistOption: Playlist) => {
+    setFolderSongPlaylistRows((current) => {
+      const next = toggleStarredPlaylist(current, playlistOption.id, favoriteMode);
+      if (next !== current) {
+        setAllPlaylists(next);
+        setPlaylists(next.filter((item) => item.folderId === folderId));
+        void db.savePlaylists(next);
+      }
+      return next;
+    });
+  };
+  const closeFolderSongPlaylistModal = () => {
+    setFolderSongPlaylistOpen(false);
+    setSelectedFolderSong(null);
+    setFolderSongPlaylistQuery('');
+    setFolderSongSendingPlaylistId(null);
+    setFolderSongRemovingPlaylistId(null);
+  };
+  const openFolderSongPlaylistPicker = async () => {
+    if (!selectedFolderSong) return;
+    const [rows, folders] = await Promise.all([db.getPlaylists(), db.getFolders()]);
+    setFolderSongPlaylistRows(rows);
+    setFolderSongPlaylistFolders(folders);
+    setFolderSongPlaylistQuery('');
+    setOpenFolderSongActions(false);
+    runAfterModalClose(() => setFolderSongPlaylistOpen(true));
+  };
+  const addFolderSongToPlaylist = async (playlistOption: Playlist) => {
+    if (!selectedFolderSong || selectedFolderSongAlreadyInPlaylist(playlistOption) || folderSongSendingPlaylistId || folderSongRemovingPlaylistId) return;
+    setFolderSongSendingPlaylistId(playlistOption.id);
+    await db.addSongToPlaylist(playlistOption.id, selectedFolderSong.id);
+    setFolderSongPlaylistRows((current) =>
+      current.map((item) =>
+        item.id === playlistOption.id
+          ? {
+              ...item,
+              songIds: item.songIds.includes(selectedFolderSong.id)
+                ? item.songIds
+                : [...item.songIds, selectedFolderSong.id],
+            }
+          : item
+      )
+    );
+    setFolderSongSendingPlaylistId(null);
+  };
+  const removeFolderSongFromPlaylist = async (playlistOption: Playlist) => {
+    if (!selectedFolderSong || !selectedFolderSongAlreadyInPlaylist(playlistOption) || folderSongSendingPlaylistId || folderSongRemovingPlaylistId) return;
+    setFolderSongRemovingPlaylistId(playlistOption.id);
+    await db.removeSongFromPlaylist(playlistOption.id, selectedFolderSong.id);
+    setFolderSongPlaylistRows((current) =>
+      current.map((item) =>
+        item.id === playlistOption.id
+          ? { ...item, songIds: item.songIds.filter((songId) => songId !== selectedFolderSong.id) }
+          : item
+      )
+    );
+    setFolderSongRemovingPlaylistId(null);
+  };
+  const openSelectedFolderSong = () => {
+    if (!selectedFolderSong) return;
+    const targetSong = selectedFolderSong;
+    setOpenFolderSongActions(false);
+    setSelectedFolderSong(null);
+    nav.navigate('SongDetail', { id: targetSong.id, returnTo: songReturnTo });
+  };
+  const removeSelectedFolderSong = () => {
+    if (!selectedFolderSong) return;
+    const targetSong = selectedFolderSong;
+    setOpenFolderSongActions(false);
+    setSelectedFolderSong(null);
+    runAfterModalClose(() => {
+      void removeSongFromCurrentFolder(targetSong);
+    });
+  };
   useEffect(() => {
     setTopBarControls({
       showAdd: true,
@@ -594,112 +875,119 @@ export function FolderDetailScreen({
     setOpenActions(true);
   }, [openAddOnEnter]);
 
+  const renderFolderDisplayRow = (item: FolderDisplayItem) => (
+    <View key={`folder-${item.folder.id}`} style={styles.listRow}>
+      <TouchableOpacity
+        style={styles.cardMainPress}
+        onPress={() => nav.navigate('FolderDetail', {
+          folderId: item.folder.id,
+          folderName: item.folder.name,
+          returnTo: songReturnTo,
+        })}
+      >
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+          {renderFolderListIconTile(renderFolderHierarchyIcon(item.folder, 18))}
+
+          <View style={styles.listRowText}>
+            <Text style={styles.title}>{item.folder.name}</Text>
+            <Text style={styles.subtitle}>{getFolderSubtitle(item.folder)}</Text>
+          </View>
+        </View>
+      </TouchableOpacity>
+      {favoriteMode !== 'disabled' ? (
+        <TouchableOpacity style={styles.listActionBtn} onPress={() => toggleFolderItemStar(item.folder.id)}>
+          <Star
+            size={18}
+            color={item.folder.isStarred ? '#ffd166' : '#777'}
+            fill={item.folder.isStarred ? '#ffd166' : 'transparent'}
+          />
+        </TouchableOpacity>
+      ) : null}
+      <TouchableOpacity style={styles.listActionBtn} onPress={() => openActionsForFolderItem(item.folder)}>
+        <ChevronRight size={18} color="#4FC3F7" />
+      </TouchableOpacity>
+    </View>
+  );
+
+  const renderPlaylistDisplayRow = (item: PlaylistDisplayItem) => (
+    <View key={`playlist-${item.playlist.id}`} style={styles.listRow}>
+      <TouchableOpacity
+        style={styles.cardMainPress}
+        onPress={() =>
+          nav.navigate('PlaylistDetail', {
+            playlistId: item.playlist.id,
+            playlistName: item.playlist.name,
+            folderId,
+            folderName: folder?.name,
+          })
+        }
+      >
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+          {renderFolderListIconTile(<List size={19} color="#ffd166" />)}
+
+          <View style={styles.listRowText}>
+            <Text style={styles.title}>{item.playlist.name}</Text>
+            <Text style={styles.subtitle}>{item.playlist.songIds.length} músicas</Text>
+          </View>
+        </View>
+      </TouchableOpacity>
+      {favoriteMode !== 'disabled' ? (
+        <TouchableOpacity style={styles.listActionBtn} onPress={() => togglePlaylistItemStar(item.playlist.id)}>
+          <Star
+            size={18}
+            color={item.playlist.isStarred ? '#ffd166' : '#777'}
+            fill={item.playlist.isStarred ? '#ffd166' : 'transparent'}
+          />
+        </TouchableOpacity>
+      ) : null}
+      <TouchableOpacity style={styles.listActionBtn} onPress={() => openActionsForPlaylistItem(item.playlist)}>
+        <ChevronRight size={18} color="#4FC3F7" />
+      </TouchableOpacity>
+    </View>
+  );
+
   return (
     <View style={styles.container}>
-      <ScrollView contentContainerStyle={{ paddingBottom: 140 }}>
-        {hasSubfolders ? (
-          <>
-            <Text style={[styles.subtitle, { marginHorizontal: 12, marginBottom: 8 }]}>Subpastas</Text>
-            {visibleSubfolders.map((sf) => (
-              <View key={sf.id} style={styles.listRow}>
-                <TouchableOpacity
-                  style={styles.cardMainPress}
-                  onPress={() => nav.navigate('FolderDetail', {
-                    folderId: sf.id,
-                    folderName: sf.name,
-                    returnTo: songReturnTo,
-                  })}
-                >
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                    {renderFolderHierarchyIcon(sf, 16)}
+      <FlatList
+        data={folderDetailRows}
+        keyExtractor={(row: FolderDetailListRow) => row.key}
+        initialNumToRender={16}
+        maxToRenderPerBatch={16}
+        windowSize={7}
+        removeClippedSubviews={false}
+        contentContainerStyle={{ paddingBottom: 140 }}
+        renderItem={({ item: row }: { item: FolderDetailListRow }) => {
+          if (row.type === 'label') {
+            return (
+              <Text style={[styles.subtitle, { marginHorizontal: 12, marginBottom: 8, marginTop: row.marginTop }]}>
+                {row.label}
+              </Text>
+            );
+          }
+          if (row.type === 'empty') {
+            return <Text style={[styles.subtitle, { marginHorizontal: 12, marginBottom: 8 }]}>{row.label}</Text>;
+          }
+          if (row.type === 'folder') return renderFolderDisplayRow(row.item);
+          if (row.type === 'playlist') return renderPlaylistDisplayRow(row.item);
 
-                    <View style={styles.listRowText}>
-                      <Text style={styles.title}>{sf.name}</Text>
-                      <Text style={styles.subtitle}>{getFolderSubtitle(sf)}</Text>
-                    </View>
-                  </View>
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.listActionBtn} onPress={() => openActionsForFolderItem(sf)}>
-                  <ChevronRight size={18} color="#4FC3F7" />
-                </TouchableOpacity>
-              </View>
-            ))}
-          </>
-        ) : isEmptyFolder ? (
-          <>
-            <Text style={[styles.subtitle, { marginHorizontal: 12, marginBottom: 8 }]}>Subpastas</Text>
-            <Text style={[styles.subtitle, { marginHorizontal: 12, marginBottom: 8 }]}>Nenhuma subpasta.</Text>
-          </>
-        ) : null}
-
-        {hasPlaylists ? (
-          <>
-            <Text style={[styles.subtitle, { marginHorizontal: 12, marginBottom: 8, marginTop: 10 }]}>Listas</Text>
-            {visiblePlaylists.map((pl) => (
-              <View key={pl.id} style={styles.listRow}>
-                <TouchableOpacity
-                  style={styles.cardMainPress}
-                  onPress={() =>
-                    nav.navigate('PlaylistDetail', {
-                      playlistId: pl.id,
-                      playlistName: pl.name,
-                      folderId,
-                      folderName: folder?.name,
-                    })
-                  }
-                >
+          return (
+            <View style={styles.listRow}>
+              <TouchableOpacity style={styles.cardMainPress} onPress={() => openActionsForFolderSong(row.song)}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                  <List size={16} color="#ffd166" />
-
+                  <Music2 size={16} color="#4FC3F7" />
                   <View style={styles.listRowText}>
-                    <Text style={styles.title}>{pl.name}</Text>
-                    <Text style={styles.subtitle}>{pl.songIds.length} músicas</Text>
+                    <Text style={styles.title}>{row.song.title}</Text>
+                    <Text style={styles.subtitle}>{row.song.artist}</Text>
                   </View>
                 </View>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.listActionBtn} onPress={() => openActionsForPlaylistItem(pl)}>
+              <TouchableOpacity style={styles.listActionBtn} onPress={() => openActionsForFolderSong(row.song)}>
                 <ChevronRight size={18} color="#4FC3F7" />
               </TouchableOpacity>
             </View>
-            ))}
-          </>
-        ) : isEmptyFolder ? (
-          <>
-            <Text style={[styles.subtitle, { marginHorizontal: 12, marginBottom: 8, marginTop: 10 }]}>Listas</Text>
-            <Text style={[styles.subtitle, { marginHorizontal: 12, marginBottom: 8 }]}>Nenhuma lista.</Text>
-          </>
-        ) : null}
-
-        {hasFolderSongs ? (
-          <>
-            <Text style={[styles.subtitle, { marginHorizontal: 12, marginBottom: 8, marginTop: 10 }]}>Músicas na pasta</Text>
-            {folderSongs.map((s) => (
-              <View key={s.id} style={styles.listRow}>
-                <TouchableOpacity
-                  style={styles.cardMainPress}
-                  onPress={() => nav.navigate('SongDetail', { id: s.id, returnTo: songReturnTo })}
-                >
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                    <Music2 size={16} color="#4FC3F7" />
-                    <View style={styles.listRowText}>
-                      <Text style={styles.title}>{s.title}</Text>
-                      <Text style={styles.subtitle}>{s.artist}</Text>
-                    </View>
-                  </View>
-                </TouchableOpacity>
-                <TouchableOpacity onPress={() => removeSongFromCurrentFolder(s)}>
-                  <Trash2 size={18} color="#ff6b6b" />
-                </TouchableOpacity>
-              </View>
-            ))}
-          </>
-        ) : isEmptyFolder ? (
-          <>
-            <Text style={[styles.subtitle, { marginHorizontal: 12, marginBottom: 8, marginTop: 10 }]}>Músicas na pasta</Text>
-            <Text style={[styles.subtitle, { marginHorizontal: 12, marginBottom: 8 }]}>Nenhuma música nesta pasta.</Text>
-          </>
-        ) : null}
-      </ScrollView>
+          );
+        }}
+      />
 
       <AppModal
         visible={openActions}
@@ -846,9 +1134,26 @@ export function FolderDetailScreen({
                   {multiSelectFolders ? (
                     renderSelectionCheck(selectedFolderIdSet.has(folderOption.id))
                   ) : (
-                    <View style={{ width: 22, alignItems: 'flex-end', justifyContent: 'center', flexShrink: 0 }}>
-                      <ChevronRight size={18} color="#777" />
-                    </View>
+                    <>
+                      {favoriteMode !== 'disabled' ? (
+                        <TouchableOpacity
+                          style={styles.listActionBtn}
+                          onPress={(event: any) => {
+                            event?.stopPropagation?.();
+                            toggleFolderItemStar(folderOption.id);
+                          }}
+                        >
+                          <Star
+                            size={17}
+                            color={folderOption.isStarred ? '#ffd166' : '#777'}
+                            fill={folderOption.isStarred ? '#ffd166' : 'transparent'}
+                          />
+                        </TouchableOpacity>
+                      ) : null}
+                      <View style={{ width: 22, alignItems: 'flex-end', justifyContent: 'center', flexShrink: 0 }}>
+                        <ChevronRight size={18} color="#777" />
+                      </View>
+                    </>
                   )}
                 </TouchableOpacity>
               );
@@ -925,9 +1230,26 @@ export function FolderDetailScreen({
                   {multiSelectPlaylists ? (
                     renderSelectionCheck(selectedPlaylistIdSet.has(playlistOption.id))
                   ) : (
-                    <View style={{ width: 22, alignItems: 'flex-end', justifyContent: 'center', flexShrink: 0 }}>
-                      <ChevronRight size={18} color="#777" />
-                    </View>
+                    <>
+                      {favoriteMode !== 'disabled' ? (
+                        <TouchableOpacity
+                          style={styles.listActionBtn}
+                          onPress={(event: any) => {
+                            event?.stopPropagation?.();
+                            togglePlaylistItemStar(playlistOption.id);
+                          }}
+                        >
+                          <Star
+                            size={17}
+                            color={playlistOption.isStarred ? '#ffd166' : '#777'}
+                            fill={playlistOption.isStarred ? '#ffd166' : 'transparent'}
+                          />
+                        </TouchableOpacity>
+                      ) : null}
+                      <View style={{ width: 22, alignItems: 'flex-end', justifyContent: 'center', flexShrink: 0 }}>
+                        <ChevronRight size={18} color="#777" />
+                      </View>
+                    </>
                   )}
                 </TouchableOpacity>
               );
@@ -1062,6 +1384,82 @@ export function FolderDetailScreen({
       </AppModal>
 
       <AppModal
+        visible={openFolderSongActions}
+        title="Música na pasta"
+        onClose={() => {
+          setOpenFolderSongActions(false);
+          setSelectedFolderSong(null);
+        }}
+        icon={<Music2 size={16} color="#4FC3F7" />}
+        maxWidth={520}
+        footer={
+          <TouchableOpacity
+            onPress={() => {
+              setOpenFolderSongActions(false);
+              setSelectedFolderSong(null);
+            }}
+          >
+            <Text style={{ color: '#aaa', fontWeight: '800' }}>Fechar</Text>
+          </TouchableOpacity>
+        }
+      >
+        <Text style={styles.createHint}>
+          {selectedFolderSong
+            ? `${selectedFolderSong.title}${selectedFolderSong.artist ? ` - ${selectedFolderSong.artist}` : ''}`
+            : ''}
+        </Text>
+        <TouchableOpacity style={[styles.modalActionBtn, styles.songActionOptionBtn]} onPress={openSelectedFolderSong}>
+          <View style={styles.createOptionLeft}>
+            <Music2 size={17} color="#4FC3F7" />
+            <Text style={styles.modalActionText}>Abrir música</Text>
+          </View>
+          <ChevronRight size={18} color="#777" />
+        </TouchableOpacity>
+        <TouchableOpacity style={[styles.modalActionBtn, styles.songActionOptionBtn]} onPress={openFolderSongPlaylistPicker}>
+          <View style={styles.createOptionLeft}>
+            <List size={17} color="#ffd166" />
+            <Text style={styles.modalActionText}>Adicionar a uma lista</Text>
+          </View>
+          <ChevronRight size={18} color="#777" />
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.modalActionBtn, styles.songActionOptionBtn, styles.modalDangerBtn]}
+          onPress={removeSelectedFolderSong}
+        >
+          <View style={styles.createOptionLeft}>
+            <Trash2 size={17} color="#ff7a7a" />
+            <Text style={styles.modalDangerText}>Excluir da pasta</Text>
+          </View>
+        </TouchableOpacity>
+      </AppModal>
+
+      <PlaylistPickerModal
+        visible={folderSongPlaylistOpen}
+        title="Adicionar a uma lista"
+        contextText={
+          selectedFolderSong
+            ? `${selectedFolderSong.title}${selectedFolderSong.artist ? ` - ${selectedFolderSong.artist}` : ''}`
+            : ''
+        }
+        query={folderSongPlaylistQuery}
+        playlists={folderSongPlaylistOptions}
+        addingToPlaylistId={folderSongSendingPlaylistId}
+        removingFromPlaylistId={folderSongRemovingPlaylistId}
+        onQueryChange={setFolderSongPlaylistQuery}
+        onClose={closeFolderSongPlaylistModal}
+        playlistAlreadyHasSong={selectedFolderSongAlreadyInPlaylist}
+        getPlaylistSubtitle={getFolderSongPlaylistSubtitle}
+        onSelectPlaylist={(playlistOption) => void addFolderSongToPlaylist(playlistOption)}
+        onRemoveFromPlaylist={(playlistOption) => void removeFolderSongFromPlaylist(playlistOption)}
+        showStars={favoriteMode !== 'disabled'}
+        onToggleStarredPlaylist={toggleFolderSongPlaylistStar}
+        actionLabel="Adicionar"
+        busyLabel="Adicionando..."
+        alreadyAddedLabel="Já está nesta lista"
+        emptyLabel="Nenhuma lista encontrada."
+      />
+
+      <AppModal
           visible={openFolderItemActions}
           title="Opções da pasta"
           onClose={() => {
@@ -1090,10 +1488,13 @@ export function FolderDetailScreen({
               setOpenRenameFolderItem(true);
             }}
           >
-            <View style={styles.createOptionLeft}>
-              <Pencil size={17} color="#4FC3F7" />
-              <Text style={styles.modalActionText}>Editar nome</Text>
-            </View>
+          <View style={styles.createOptionLeft}>
+            <Pencil size={17} color="#4FC3F7" />
+              <View>
+                <Text style={styles.modalActionText}>Editar nome</Text>
+                <Text style={styles.subtitle}>Altere o nome desta pasta.</Text>
+              </View>
+          </View>
 
             <ChevronRight size={18} color="#777" />
           </TouchableOpacity>
@@ -1112,6 +1513,46 @@ export function FolderDetailScreen({
 
             <ChevronRight size={18} color="#777" />
           </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.modalActionBtn, styles.songActionOptionBtn]}
+            onPress={shareSelectedFolderItem}
+          >
+            <View style={styles.createOptionLeft}>
+              <Share2 size={17} color="#4FC3F7" />
+              <View>
+                <Text style={styles.modalActionText}>Compartilhar pasta</Text>
+                <Text style={styles.subtitle}>Compartilhe esta pasta com outro dispositivo ou usuário.</Text>
+              </View>
+            </View>
+            <ChevronRight size={18} color="#777" />
+          </TouchableOpacity>
+
+          {favoriteMode !== 'disabled' && selectedFolderItem ? (
+            <TouchableOpacity
+              style={[styles.modalActionBtn, styles.songActionOptionBtn]}
+              onPress={toggleSelectedFolderItemStar}
+            >
+              <View style={styles.createOptionLeft}>
+                {selectedFolderItem.isStarred ? (
+                  <StarOff size={17} color="#ffd166" />
+                ) : (
+                  <Star size={17} color="#ffd166" />
+                )}
+                <View>
+                  <Text style={styles.modalActionText}>
+                    {selectedFolderItem.isStarred ? 'Remover dos favoritos' : 'Favoritar pasta'}
+                  </Text>
+                  <Text style={styles.subtitle}>
+                    {selectedFolderItem.isStarred
+                      ? 'Remova esta pasta dos seus favoritos.'
+                      : 'Adicione esta pasta aos seus favoritos.'}
+                  </Text>
+                </View>
+              </View>
+              <ChevronRight size={18} color="#777" />
+            </TouchableOpacity>
+          ) : null}
 
           <TouchableOpacity
             style={[
@@ -1174,11 +1615,31 @@ export function FolderDetailScreen({
             availableFolderItemTargets.map((folderOption) => (
               <TouchableOpacity
                 key={folderOption.id}
-                style={styles.modalActionBtn}
+                style={[
+                  styles.modalActionBtn,
+                  { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
+                ]}
                 onPress={() => moveSelectedFolderItem(folderOption.id)}
               >
-                <Text style={styles.modalActionText}>{folderOption.name}</Text>
-                <Text style={styles.subtitle}>{folderOption.parentId ? 'Subpasta' : 'Pasta'}</Text>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={styles.modalActionText}>{folderOption.name}</Text>
+                  <Text style={styles.subtitle}>{folderOption.parentId ? 'Subpasta' : 'Pasta'}</Text>
+                </View>
+                {favoriteMode !== 'disabled' ? (
+                  <TouchableOpacity
+                    style={styles.listActionBtn}
+                    onPress={(event: any) => {
+                      event?.stopPropagation?.();
+                      toggleFolderItemStar(folderOption.id);
+                    }}
+                  >
+                    <Star
+                      size={17}
+                      color={folderOption.isStarred ? '#ffd166' : '#777'}
+                      fill={folderOption.isStarred ? '#ffd166' : 'transparent'}
+                    />
+                  </TouchableOpacity>
+                ) : null}
               </TouchableOpacity>
             ))
           ) : (
@@ -1217,7 +1678,10 @@ export function FolderDetailScreen({
         >
           <View style={styles.createOptionLeft}>
             <Pencil size={17} color="#4FC3F7" />
-            <Text style={styles.modalActionText}>Editar nome</Text>
+            <View>
+              <Text style={styles.modalActionText}>Editar nome</Text>
+              <Text style={styles.subtitle}>Altere o nome desta lista.</Text>
+            </View>
           </View>
           <ChevronRight size={18} color="#777" />
         </TouchableOpacity>
@@ -1231,10 +1695,48 @@ export function FolderDetailScreen({
         <TouchableOpacity style={[styles.modalActionBtn, styles.songActionOptionBtn]} onPress={shareSelectedPlaylistItem}>
           <View style={styles.createOptionLeft}>
             <Share2 size={17} color="#4FC3F7" />
-            <Text style={styles.modalActionText}>Compartilhar lista</Text>
+            <View>
+              <Text style={styles.modalActionText}>Compartilhar lista</Text>
+              <Text style={styles.subtitle}>Compartilhe esta lista com outro dispositivo ou usuário.</Text>
+            </View>
           </View>
           <ChevronRight size={18} color="#777" />
         </TouchableOpacity>
+        <TouchableOpacity style={[styles.modalActionBtn, styles.songActionOptionBtn]} onPress={duplicateSelectedPlaylistItem}>
+          <View style={styles.createOptionLeft}>
+            <Copy size={17} color="#4FC3F7" />
+            <View>
+              <Text style={styles.modalActionText}>Duplicar lista</Text>
+              <Text style={styles.subtitle}>Crie uma cópia independente desta lista.</Text>
+            </View>
+          </View>
+          <ChevronRight size={18} color="#777" />
+        </TouchableOpacity>
+        {favoriteMode !== 'disabled' && selectedPlaylistItem ? (
+          <TouchableOpacity
+            style={[styles.modalActionBtn, styles.songActionOptionBtn]}
+            onPress={toggleSelectedPlaylistItemStar}
+          >
+            <View style={styles.createOptionLeft}>
+              {selectedPlaylistItem.isStarred ? (
+                <StarOff size={17} color="#ffd166" />
+              ) : (
+                <Star size={17} color="#ffd166" />
+              )}
+              <View>
+                <Text style={styles.modalActionText}>
+                  {selectedPlaylistItem.isStarred ? 'Remover dos favoritos' : 'Favoritar lista'}
+                </Text>
+                <Text style={styles.subtitle}>
+                  {selectedPlaylistItem.isStarred
+                    ? 'Remova esta lista dos seus favoritos.'
+                    : 'Adicione esta lista aos seus favoritos.'}
+                </Text>
+              </View>
+            </View>
+            <ChevronRight size={18} color="#777" />
+          </TouchableOpacity>
+        ) : null}
         <TouchableOpacity
           style={[styles.modalActionBtn, styles.songActionOptionBtn, styles.modalDangerBtn]}
           onPress={deleteSelectedPlaylistItem}
@@ -1274,3 +1776,18 @@ export function FolderDetailScreen({
     </View>
   );
 }
+
+const localStyles = StyleSheet.create({
+  listIconTile: {
+    width: 34,
+    height: 34,
+    borderRadius: 5,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(14, 165, 233, 0.10)',
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.22)',
+    boxShadow: '0 10px 20px rgba(14, 165, 233, 0.10)',
+    flexShrink: 0,
+  },
+});

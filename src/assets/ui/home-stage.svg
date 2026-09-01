@@ -1,0 +1,38 @@
+<svg width="520" height="260" viewBox="0 0 520 260" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="beamA" x1="382" y1="0" x2="272" y2="230" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#5CC8FF" stop-opacity=".58"/>
+      <stop offset=".62" stop-color="#1279B3" stop-opacity=".13"/>
+      <stop offset="1" stop-color="#041018" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="beamB" x1="492" y1="0" x2="358" y2="246" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#8FDFFF" stop-opacity=".46"/>
+      <stop offset=".7" stop-color="#0EA5E9" stop-opacity=".1"/>
+      <stop offset="1" stop-color="#041018" stop-opacity="0"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(400 44) rotate(97) scale(154 240)">
+      <stop stop-color="#38BDF8" stop-opacity=".34"/>
+      <stop offset=".64" stop-color="#0284C7" stop-opacity=".08"/>
+      <stop offset="1" stop-color="#020A10" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="520" height="260" fill="url(#glow)"/>
+  <path d="M338 0H408L287 260H224L338 0Z" fill="url(#beamA)"/>
+  <path d="M460 0H520L383 260H324L460 0Z" fill="url(#beamB)"/>
+  <circle cx="383" cy="22" r="10" fill="#7DD3FC" opacity=".5"/>
+  <circle cx="492" cy="20" r="8" fill="#BAE6FD" opacity=".42"/>
+  <g fill="#02070B" opacity=".9">
+    <path d="M357 80c10 0 18-8 18-18s-8-18-18-18-18 8-18 18 8 18 18 18Z"/>
+    <path d="M328 99c8-18 49-19 59 0l19 46-18 8-13-30-2 68h-37l-1-68-13 30-18-8 24-46Z"/>
+    <path d="M375 116l7-13 98 52-7 13-98-52Z"/>
+    <path d="M464 150c8-3 16 1 19 8l3 8-24 10-3-8c-3-7-1-14 5-18Z"/>
+    <path d="M334 189h17l-9 49h-20l12-49Z"/>
+    <path d="M361 189h16l23 49h-21l-18-49Z"/>
+  </g>
+  <g fill="#02070B" opacity=".68">
+    <path d="M262 205c0-14 11-25 25-25s25 11 25 25v35h-50v-35Z"/>
+    <path d="M424 207c0-13 10-23 23-23s23 10 23 23v35h-46v-35Z"/>
+    <path d="M204 213c0-10 8-18 18-18s18 8 18 18v29h-36v-29Z"/>
+  </g>
+  <path d="M146 240c92-30 226-31 364 0v20H146v-20Z" fill="#02070B" opacity=".74"/>
+</svg>
