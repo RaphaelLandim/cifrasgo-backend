@@ -1,8 +1,14 @@
 import React from 'react';
 import { useGenreFilter } from './GenreFilterContext';
+import { useSettings } from './SettingsContext';
 import { db } from '../services/storage';
 import type { LastOpenedPlaylist } from '../types/models';
+import { sortFolderPlaylistDisplayItems } from '../utils/folderPlaylistDisplay';
 import { matchesGenreFilter, playlistMatchesGenreFilter } from '../utils/genres';
+
+export type DrawerFavoriteShortcut =
+  | { type: 'playlist'; id: string; name: string; folderId: string | null }
+  | { type: 'folder'; id: string; name: string };
 
 interface DrawerStats {
   songs: number;
@@ -10,6 +16,7 @@ interface DrawerStats {
   artists: number;
   folders: number;
   lastOpenedPlaylist: LastOpenedPlaylist | null;
+  favoriteShortcuts: DrawerFavoriteShortcut[];
 }
 
 interface DrawerContextValue {
@@ -23,6 +30,7 @@ const DrawerContext = React.createContext<DrawerContextValue | null>(null);
 
 export function DrawerProvider({ children }: { children: React.ReactNode }) {
   const { globalFilters } = useGenreFilter();
+  const { favoriteMode, folderPlaylistDisplayMode } = useSettings();
   const [drawerOpen, setDrawerOpen] = React.useState(false);
   const [drawerStats, setDrawerStats] = React.useState<DrawerStats>({
     songs: 0,
@@ -30,6 +38,7 @@ export function DrawerProvider({ children }: { children: React.ReactNode }) {
     artists: 0,
     folders: 0,
     lastOpenedPlaylist: null,
+    favoriteShortcuts: [],
   });
 
   const openDrawer = React.useCallback(() => {
@@ -57,6 +66,19 @@ export function DrawerProvider({ children }: { children: React.ReactNode }) {
       const currentPlaylist = lastOpened
         ? playlists.find((playlist) => playlist.id === lastOpened.playlistId)
         : null;
+      const favoriteShortcuts: DrawerFavoriteShortcut[] = sortFolderPlaylistDisplayItems(
+        folders.filter((folder) => folder.isStarred === true),
+        playlists.filter((playlist) => playlist.isStarred === true),
+        favoriteMode,
+        folderPlaylistDisplayMode,
+      ).map((item) => item.type === 'folder'
+        ? { type: 'folder', id: item.folder.id, name: item.folder.name }
+        : {
+            type: 'playlist',
+            id: item.playlist.id,
+            name: item.playlist.name,
+            folderId: item.playlist.folderId ?? null,
+          });
 
       if (lastOpened && !currentPlaylist) {
         void db.clearLastOpenedPlaylist();
@@ -75,13 +97,19 @@ export function DrawerProvider({ children }: { children: React.ReactNode }) {
               updatedAt: lastOpened?.updatedAt ?? Date.now(),
             }
           : null,
+        favoriteShortcuts,
       });
     });
 
     return () => {
       isActive = false;
     };
-  }, [drawerOpen, globalFilters.selectedGenres]);
+  }, [
+    drawerOpen,
+    favoriteMode,
+    folderPlaylistDisplayMode,
+    globalFilters.selectedGenres,
+  ]);
 
   const value = React.useMemo(
     () => ({

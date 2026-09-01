@@ -19,6 +19,12 @@ import { useDevScreenPerformance } from '../utils/devPerformance';
 
 interface FoldersScreenProps {
   styles: any;
+  sessionState: {
+    query: string;
+    searchOn: boolean;
+    viewFilter: 'all' | 'playlists' | 'folders';
+    scrollOffset: number;
+  };
 }
 
 const getFolderDepth = (folderId: string, folders: Folder[]) => {
@@ -61,39 +67,40 @@ const formatDirectStats = (stats: { songs: number; subfolders: number; lists: nu
 };
 
 const renderFolderHierarchyIcon = (depth: number, size = 16) => {
-  if (depth <= 1) return <FolderIcon size={size} color="#4FC3F7" />;
+  if (depth <= 1) return <FolderIcon size={size} color="#a855f7" />;
 
   return (
     <View style={{ width: size + 7, height: size + 4, position: 'relative', marginLeft: depth >= 3 ? 2 : 0 }}>
       <FolderIcon
         size={size - 3}
-        color="#2f8fbd"
+        color="#7e22ce"
         style={{ position: 'absolute', left: depth >= 3 ? 0 : 1, top: 0, opacity: 0.75 } as any}
       />
       {depth >= 3 ? (
         <FolderPlus
           size={size - 4}
-          color="#8bdcff"
+          color="#c084fc"
           style={{ position: 'absolute', left: 4, top: 3, opacity: 0.7 } as any}
         />
       ) : null}
       <FolderIcon
         size={size}
-        color="#4FC3F7"
+        color="#a855f7"
         style={{ position: 'absolute', left: depth >= 3 ? 7 : 5, top: depth >= 3 ? 5 : 4 } as any}
       />
     </View>
   );
 };
 
-const renderFolderListIconTile = (icon: React.ReactNode) => (
-  <View style={localStyles.listIconTile}>
+const renderFolderListIconTile = (icon: React.ReactNode, isFolder = false) => (
+  <View style={[localStyles.listIconTile, isFolder && localStyles.folderListIconTile]}>
     {icon}
   </View>
 );
 
 export function FoldersScreen({
   styles,
+  sessionState,
 }: FoldersScreenProps) {
   useDevScreenPerformance('Folders');
   const nav = useManualNavigation();
@@ -105,7 +112,8 @@ export function FoldersScreen({
   const [allPlaylists, setAllPlaylists] = useState<Playlist[]>([]);
   const [allSongs, setAllSongs] = useState<Song[]>([]);
   const [folderSongMap, setFolderSongMap] = useState<Record<string, string[]>>({});
-  const [viewFilter, setViewFilter] = useState<'all' | 'playlists' | 'folders'>('all');
+  const [listReady, setListReady] = useState(false);
+  const [viewFilter, setViewFilter] = useState<'all' | 'playlists' | 'folders'>(() => sessionState.viewFilter);
   const [openCreateType, setOpenCreateType] = useState(false);
   const [openCreateFolder, setOpenCreateFolder] = useState(false);
   const [openCreatePlaylist, setOpenCreatePlaylist] = useState(false);
@@ -120,8 +128,9 @@ export function FoldersScreen({
   const [name, setName] = useState('');
   const [folderRenameName, setFolderRenameName] = useState('');
   const [playlistRenameName, setPlaylistRenameName] = useState('');
-  const [q, setQ] = useState('');
-  const [searchOn, setSearchOn] = useState(false);
+  const [q, setQ] = useState(() => sessionState.query);
+  const [searchOn, setSearchOn] = useState(() => sessionState.searchOn);
+  const userScrolledListRef = React.useRef(false);
   const load = async () => {
     const [allFolders, allPlaylists, songs, storedFolderSongMap] = await Promise.all([
       db.getFolders(),
@@ -137,6 +146,7 @@ export function FoldersScreen({
     setAllPlaylists(allPlaylists);
     setAllSongs(songs);
     setFolderSongMap(nextFolderSongMap);
+    setListReady(true);
   };
   useEffect(() => { load(); }, []);
   const createFolder = async () => {
@@ -381,13 +391,37 @@ export function FoldersScreen({
       onSearchPress: () => {
         const next = !searchOn;
         setSearchOn(next);
-        if (!next) setQ('');
+        sessionState.searchOn = next;
+        if (!next) {
+          setQ('');
+          sessionState.query = '';
+        }
       },
       showAdd: true,
       onAddPress: () => setOpenCreateType(true),
     });
     return clearTopBarControls;
-  }, [clearTopBarControls, searchOn, setTopBarControls]);
+  }, [clearTopBarControls, searchOn, sessionState, setTopBarControls]);
+
+  const handleSearchChange = (value: string) => {
+    sessionState.query = value;
+    setQ(value);
+  };
+
+  const handleViewFilterChange = (value: typeof viewFilter) => {
+    sessionState.viewFilter = value;
+    setViewFilter(value);
+  };
+
+  const openPlaylistDetail = (playlist: Playlist) => {
+    sessionState.query = q;
+    sessionState.searchOn = searchOn;
+    sessionState.viewFilter = viewFilter;
+    nav.navigate('PlaylistDetail', {
+      playlistId: playlist.id,
+      playlistName: playlist.name,
+    });
+  };
 
   return (
     <View style={styles.container}>
@@ -399,7 +433,7 @@ export function FoldersScreen({
             placeholder="Buscar pastas e listas..."
             placeholderTextColor="#666"
             value={q}
-            onChangeText={setQ}
+            onChangeText={handleSearchChange}
             autoFocus
           />
         </View>
@@ -437,16 +471,26 @@ export function FoldersScreen({
                   borderLeftColor: 'var(--app-border-soft)',
                 },
               ]}
-              onPress={() => setViewFilter(option.value)}
+              onPress={() => handleViewFilterChange(option.value)}
             >
               <Text style={[styles.filterBtnText, active && styles.filterBtnTextActive]}>{option.label}</Text>
             </TouchableOpacity>
           );
         })}
       </View>
-      <FlatList
+      {listReady ? <FlatList
         data={visibleItems}
         keyExtractor={(item: FolderPlaylistDisplayItem) => (item.type === 'folder' ? `folder-${item.folder.id}` : `playlist-${item.playlist.id}`)}
+        contentOffset={{ x: 0, y: sessionState.scrollOffset }}
+        scrollEventThrottle={100}
+        onScrollBeginDrag={() => {
+          userScrolledListRef.current = true;
+        }}
+        onScroll={(event: { nativeEvent: { contentOffset: { y: number } } }) => {
+          const receivedOffset = Math.max(0, event.nativeEvent.contentOffset.y || 0);
+          if (!userScrolledListRef.current) return;
+          sessionState.scrollOffset = receivedOffset;
+        }}
         contentContainerStyle={{ paddingBottom: 120 }}
         renderItem={({ item }: { item: FolderPlaylistDisplayItem }) => (
           item.type === 'folder' ? (
@@ -456,7 +500,7 @@ export function FoldersScreen({
                 onPress={() => nav.navigate('FolderDetail', { folderId: item.folder.id, folderName: item.folder.name })}
               >
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-                  {renderFolderListIconTile(renderFolderHierarchyIcon(getFolderDepth(item.folder.id, allFolders), 18))}
+                  {renderFolderListIconTile(renderFolderHierarchyIcon(getFolderDepth(item.folder.id, allFolders), 18), true)}
                   <View style={styles.listRowText}>
                     <Text style={styles.title}>{item.folder.name}</Text>
                     <Text style={styles.subtitle}>{getFolderSubtitle(item.folder)}</Text>
@@ -480,12 +524,7 @@ export function FoldersScreen({
             <View style={styles.listRow}>
               <TouchableOpacity
                 style={styles.cardMainPress}
-                onPress={() =>
-                  nav.navigate('PlaylistDetail', {
-                    playlistId: item.playlist.id,
-                    playlistName: item.playlist.name,
-                  })
-                }
+                onPress={() => openPlaylistDetail(item.playlist)}
               >
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
                   {renderFolderListIconTile(<ListMusic size={19} color="#ffd166" />)}
@@ -510,7 +549,7 @@ export function FoldersScreen({
             </View>
           )
         )}
-      />
+      /> : null}
 
       <AppModal
         visible={openCreateType}
@@ -534,7 +573,7 @@ export function FoldersScreen({
           }}
         >
           <View style={styles.createOptionLeft}>
-            <FolderIcon size={18} color="#4FC3F7" />
+            <FolderIcon size={18} color="#a855f7" />
             <View>
               <Text style={styles.title}>Pasta</Text>
               <Text style={styles.subtitle}>Dentro da pasta você pode criar listas</Text>
@@ -565,7 +604,7 @@ export function FoldersScreen({
         visible={openCreateFolder}
         title="Nova pasta"
         onClose={() => setOpenCreateFolder(false)}
-        icon={<FolderIcon size={16} color="#4FC3F7" />}
+        icon={<FolderIcon size={16} color="#a855f7" />}
         footer={
           <>
             <TouchableOpacity onPress={() => setOpenCreateFolder(false)}>
@@ -607,7 +646,7 @@ export function FoldersScreen({
           setOpenFolderActions(false);
           setSelectedFolder(null);
         }}
-        icon={<FolderIcon size={16} color="#4FC3F7" />}
+        icon={<FolderIcon size={16} color="#a855f7" />}
         footer={
           <TouchableOpacity
             onPress={() => {
@@ -642,7 +681,7 @@ export function FoldersScreen({
           }}
         >
           <View style={styles.createOptionLeft}>
-            <FolderInput size={17} color="#4FC3F7" />
+            <FolderInput size={17} color="#a855f7" />
             <Text style={styles.modalActionText}>Enviar para pasta...</Text>
           </View>
           <ChevronRight size={18} color="#777" />
@@ -672,7 +711,7 @@ export function FoldersScreen({
         visible={openRenameFolder}
         title="Editar nome da pasta"
         onClose={() => setOpenRenameFolder(false)}
-        icon={<FolderIcon size={16} color="#4FC3F7" />}
+        icon={<FolderIcon size={16} color="#a855f7" />}
         footer={
           <>
             <TouchableOpacity onPress={() => setOpenRenameFolder(false)}>
@@ -698,7 +737,7 @@ export function FoldersScreen({
         visible={openMoveFolder}
         title="Enviar para pasta"
         onClose={() => setOpenMoveFolder(false)}
-        icon={<FolderIcon size={16} color="#4FC3F7" />}
+        icon={<FolderIcon size={16} color="#a855f7" />}
         footer={
           <TouchableOpacity onPress={() => setOpenMoveFolder(false)}>
             <Text style={{ color: '#aaa', fontWeight: '800' }}>Fechar</Text>
@@ -772,7 +811,7 @@ export function FoldersScreen({
           }}
         >
           <View style={styles.createOptionLeft}>
-            <FolderIcon size={17} color="#4FC3F7" />
+            <FolderIcon size={17} color="#a855f7" />
             <Text style={styles.modalActionText}>Enviar para pasta</Text>
           </View>
           <ChevronRight size={18} color="#777" />
@@ -832,7 +871,7 @@ export function FoldersScreen({
         visible={openMovePlaylist}
         title="Enviar para pasta"
         onClose={() => setOpenMovePlaylist(false)}
-        icon={<FolderIcon size={16} color="#4FC3F7" />}
+        icon={<FolderIcon size={16} color="#a855f7" />}
         footer={
           <TouchableOpacity onPress={() => setOpenMovePlaylist(false)}>
             <Text style={{ color: '#aaa', fontWeight: '800' }}>Fechar</Text>
@@ -879,5 +918,10 @@ const localStyles = StyleSheet.create({
     borderColor: 'rgba(56, 189, 248, 0.22)',
     boxShadow: '0 10px 20px rgba(14, 165, 233, 0.10)',
     flexShrink: 0,
+  },
+  folderListIconTile: {
+    backgroundColor: 'rgba(168, 85, 247, 0.12)',
+    borderColor: 'rgba(168, 85, 247, 0.24)',
+    boxShadow: '0 10px 20px rgba(168, 85, 247, 0.10)',
   },
 });

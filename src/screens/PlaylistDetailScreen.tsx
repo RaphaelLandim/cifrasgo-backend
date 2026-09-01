@@ -37,6 +37,11 @@ interface PlaylistDetailScreenProps {
   folderName?: string;
   openAddOnEnter?: boolean;
   styles: any;
+  sessionState: {
+    query: string;
+    searchOn: boolean;
+    scrollOffset: number;
+  };
 }
 
 type SectionColorKey = 'blue' | 'green' | 'gold' | 'purple' | 'red' | 'gray';
@@ -106,6 +111,7 @@ export function PlaylistDetailScreen({
   folderName,
   openAddOnEnter,
   styles,
+  sessionState,
 }: PlaylistDetailScreenProps) {
   useDevScreenPerformance('PlaylistDetail');
   const nav = useManualNavigation();
@@ -138,8 +144,8 @@ export function PlaylistDetailScreen({
   const [openAddMusicSourcePicker, setOpenAddMusicSourcePicker] = useState(false);
   const [multiSelectSongs, setMultiSelectSongs] = useState(false);
   const [selectedSongIds, setSelectedSongIds] = useState<string[]>([]);
-  const [playlistSearch, setPlaylistSearch] = useState('');
-  const [playlistSearchOpen, setPlaylistSearchOpen] = useState(false);
+  const [playlistSearch, setPlaylistSearch] = useState(() => sessionState.query);
+  const [playlistSearchOpen, setPlaylistSearchOpen] = useState(() => sessionState.searchOn);
   const [sendToPlaylistSong, setSendToPlaylistSong] = useState<Song | null>(null);
   const [sendToPlaylistOpen, setSendToPlaylistOpen] = useState(false);
   const [sendToPlaylistQuery, setSendToPlaylistQuery] = useState('');
@@ -971,13 +977,26 @@ export function PlaylistDetailScreen({
       onSearchPress: () => {
         const next = !playlistSearchOpen;
         setPlaylistSearchOpen(next);
-        if (!next) setPlaylistSearch('');
+        sessionState.searchOn = next;
+        if (!next) {
+          setPlaylistSearch('');
+          sessionState.query = '';
+        }
       },
       showAdd: true,
       onAddPress: () => setOpenPlaylistActions(true),
     });
     return clearTopBarControls;
-  }, [clearTopBarControls, playlistSearchOpen, setTopBarControls]);
+  }, [clearTopBarControls, playlistSearchOpen, sessionState, setTopBarControls]);
+
+  const handlePlaylistSearchChange = (value: string) => {
+    sessionState.query = value;
+    setPlaylistSearch(value);
+  };
+
+  const handlePlaylistScroll = (event: { nativeEvent: { contentOffset: { y: number } } }) => {
+    sessionState.scrollOffset = Math.max(0, event.nativeEvent.contentOffset.y || 0);
+  };
 
   return (
     <View style={styles.container}>
@@ -989,7 +1008,7 @@ export function PlaylistDetailScreen({
             placeholder="Buscar nesta lista..."
             placeholderTextColor="#666"
             value={playlistSearch}
-            onChangeText={setPlaylistSearch}
+            onChangeText={handlePlaylistSearchChange}
             autoFocus
           />
         </View>
@@ -1005,6 +1024,9 @@ export function PlaylistDetailScreen({
           maxToRenderPerBatch={3}
           windowSize={5}
           removeClippedSubviews={false}
+          contentOffset={{ x: 0, y: sessionState.scrollOffset }}
+          scrollEventThrottle={100}
+          onScroll={handlePlaylistScroll}
           contentContainerStyle={{ paddingBottom: 140 }}
           renderItem={({ item: section }: { item: (typeof visibleScriptSections)[number] }) => {
             const sectionColor = getSectionColor(section.color);
@@ -1063,6 +1085,9 @@ export function PlaylistDetailScreen({
           maxToRenderPerBatch={12}
           windowSize={7}
           removeClippedSubviews={false}
+          contentOffset={{ x: 0, y: sessionState.scrollOffset }}
+          scrollEventThrottle={100}
+          onScroll={handlePlaylistScroll}
           contentContainerStyle={{ paddingBottom: 140 }}
           ListEmptyComponent={<Text style={[styles.subtitle, { marginHorizontal: 12 }]}>Nada encontrado nesta lista.</Text>}
           renderItem={({ item: row }: { item: PlaylistDisplayRow }) => {

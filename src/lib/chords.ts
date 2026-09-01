@@ -141,7 +141,7 @@ export const isMusicalAnnotationToken = (token: string): boolean => {
 };
 
 const CHORD_SUFFIX_PART =
-  '(?:(?:maj|min|dim|aug|sus|add|m|M|[0-9Â°Âº()+\\-#b]|\\/(?:4|6|7|9|11|13))+)*';
+  '(?:(?:maj|min|dim|aug|sus|add|m|M|[0-9°º()+\\-#b]|\\/(?:4|6|7|9|11|13))+)*';
 
 const CHORD_TOKEN_PARTS_REGEX = new RegExp(
   `^([A-G](?:#|b)?)(${CHORD_SUFFIX_PART})(?:\\/([A-G](?:#|b)?))?$`

@@ -1,5 +1,5 @@
 import React from 'react';
-import { STORAGE_KEYS } from '../services/storage';
+import { normalizeHomeShortcutSettings, STORAGE_KEYS } from '../services/storage';
 import {
   DARK_THEME,
   DARK_THEME_DISPLAY_DEFAULTS,
@@ -10,7 +10,7 @@ import {
   resolveDisplaySettings,
   resolveThemePalette,
 } from '../theme/theme';
-import type { DisplaySettings, FavoriteMode, FolderPlaylistDisplayMode, ThemePalette, ThemeSettings } from '../types/models';
+import type { DisplaySettings, FavoriteMode, FolderPlaylistDisplayMode, HomeShortcutSettings, ThemePalette, ThemeSettings } from '../types/models';
 import { normalizeFolderPlaylistDisplayMode } from '../utils/folderPlaylistDisplay';
 
 interface SettingsContextValue {
@@ -22,6 +22,8 @@ interface SettingsContextValue {
   updateFavoriteMode: (mode: FavoriteMode) => void;
   folderPlaylistDisplayMode: FolderPlaylistDisplayMode;
   updateFolderPlaylistDisplayMode: (mode: FolderPlaylistDisplayMode) => void;
+  homeShortcutSettings: HomeShortcutSettings;
+  updateHomeShortcutSettings: (settings: HomeShortcutSettings) => void;
 }
 
 const SettingsContext = React.createContext<SettingsContextValue | null>(null);
@@ -71,11 +73,22 @@ const loadFolderPlaylistDisplayMode = (): FolderPlaylistDisplayMode => {
   }
 };
 
+const loadHomeShortcutSettings = (): HomeShortcutSettings => {
+  const raw = window.localStorage.getItem(STORAGE_KEYS.homeShortcutSettings);
+  if (!raw) return { mode: 'recent' };
+  try {
+    return normalizeHomeShortcutSettings(JSON.parse(raw));
+  } catch {
+    return { mode: 'recent' };
+  }
+};
+
 export function SettingsProvider({ children }: { children: React.ReactNode }) {
   const [displaySettings, setDisplaySettings] = React.useState<DisplaySettings>(loadDisplaySettings);
   const [themeSettings, setThemeSettings] = React.useState<ThemeSettings>(loadThemeSettings);
   const [favoriteMode, setFavoriteMode] = React.useState<FavoriteMode>(loadFavoriteMode);
   const [folderPlaylistDisplayMode, setFolderPlaylistDisplayMode] = React.useState<FolderPlaylistDisplayMode>(loadFolderPlaylistDisplayMode);
+  const [homeShortcutSettings, setHomeShortcutSettings] = React.useState<HomeShortcutSettings>(loadHomeShortcutSettings);
   const themeSettingsRef = React.useRef(themeSettings);
 
   React.useEffect(() => {
@@ -125,6 +138,12 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
     window.localStorage.setItem(STORAGE_KEYS.folderPlaylistDisplayMode, JSON.stringify(normalized));
   }, []);
 
+  const updateHomeShortcutSettings = React.useCallback((settings: HomeShortcutSettings) => {
+    const normalized = normalizeHomeShortcutSettings(settings);
+    setHomeShortcutSettings(normalized);
+    window.localStorage.setItem(STORAGE_KEYS.homeShortcutSettings, JSON.stringify(normalized));
+  }, []);
+
   React.useEffect(() => {
     const palette = resolveThemePalette(themeSettings);
     Object.entries(THEME_CSS_VARIABLES).forEach(([key, cssVariable]) => {
@@ -144,15 +163,19 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
       updateFavoriteMode,
       folderPlaylistDisplayMode,
       updateFolderPlaylistDisplayMode,
+      homeShortcutSettings,
+      updateHomeShortcutSettings,
     }),
     [
       displaySettings,
       favoriteMode,
       folderPlaylistDisplayMode,
+      homeShortcutSettings,
       themeSettings,
       updateDisplaySettings,
       updateFavoriteMode,
       updateFolderPlaylistDisplayMode,
+      updateHomeShortcutSettings,
       updateThemeSettings,
     ]
   );

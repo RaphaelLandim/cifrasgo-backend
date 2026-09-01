@@ -20,7 +20,7 @@ import {
   STAFF_LINE_COLOR_OPTIONS,
   THEME_COLOR_INPUTS,
 } from '../theme/theme';
-import type { ChordFontFamily, ChordSpellingMode, FavoriteMode, FolderPlaylistDisplayMode, Genre, QuickPdfId, QuickPdfLink, Song, ThemePalette } from '../types/models';
+import type { ChordFontFamily, ChordSpellingMode, FavoriteMode, FolderPlaylistDisplayMode, Genre, HomeShortcutDisplayMode, QuickPdfId, QuickPdfLink, Song, ThemePalette } from '../types/models';
 import {
   NO_GENRE_KEY,
   getGenreDisplayName,
@@ -90,6 +90,13 @@ const FOLDER_PLAYLIST_DISPLAY_OPTIONS: Array<{ mode: FolderPlaylistDisplayMode; 
   { mode: 'mixed', title: 'Misturado por nome', hint: 'Itens marcados primeiro A-Z; depois pastas e listas juntas em ordem alfabética.' },
 ];
 
+const HOME_SHORTCUT_MODE_OPTIONS: Array<{ mode: HomeShortcutDisplayMode; title: string; hint: string }> = [
+  { mode: 'recent', title: 'Último acessado', hint: 'Mostra a última lista aberta.' },
+  { mode: 'favorites', title: 'Favoritos', hint: 'Mostra seus itens favoritos.' },
+  { mode: 'all', title: 'Todos', hint: 'Mostra favoritos e o último acesso.' },
+  { mode: 'none', title: 'Nenhum', hint: 'Oculta os atalhos desta área.' },
+];
+
 const QUICK_PDF_LABELS: Record<QuickPdfId, string> = {
   pdf1: 'PDF1',
   pdf2: 'PDF2',
@@ -117,6 +124,8 @@ export function SettingsScreen({
     updateFavoriteMode,
     folderPlaylistDisplayMode,
     updateFolderPlaylistDisplayMode,
+    homeShortcutSettings,
+    updateHomeShortcutSettings,
   } = useSettings();
   const isLightTheme = themeSettings.mode === 'light';
   const { globalFilters, updateGlobalFilters } = useGenreFilter();
@@ -889,6 +898,31 @@ export function SettingsScreen({
               placeholder="Ex: Raphael"
               placeholderTextColor="#666"
             />
+          </View>
+
+          <View style={styles.settingsControlBlock}>
+            <Text style={styles.settingsControlTitle}>Atalhos da tela inicial</Text>
+            <Text style={styles.settingsControlHint}>Escolha quais acessos rápidos aparecem no menu.</Text>
+            <View style={[styles.themeModeGrid, { marginTop: 12 }]}>
+              {HOME_SHORTCUT_MODE_OPTIONS.map((option) => {
+                const isActive = homeShortcutSettings.mode === option.mode;
+                return (
+                  <TouchableOpacity
+                    key={option.mode}
+                    style={[styles.themeModeCard, isActive && styles.themeModeCardActive]}
+                    onPress={() => updateHomeShortcutSettings({ mode: option.mode })}
+                  >
+                    <Star
+                      size={18}
+                      color={isActive ? '#ffd166' : 'var(--app-muted-text)'}
+                      fill={isActive && option.mode === 'favorites' ? '#ffd166' : 'transparent'}
+                    />
+                    <Text style={[styles.themeModeTitle, isActive && styles.themeModeTitleActive]}>{option.title}</Text>
+                    <Text style={styles.themeModeHint}>{option.hint}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
           </View>
         </View>
       </AppModal>

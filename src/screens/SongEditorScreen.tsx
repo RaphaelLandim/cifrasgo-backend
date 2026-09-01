@@ -612,8 +612,8 @@ export function SongEditorScreen({
       boxSizing: 'border-box',
       tabSize: 4,
       caretColor: 'var(--app-accent)',
-      backgroundImage: `linear-gradient(to bottom, transparent ${Math.max(0, editorLineHeight - 1)}px, ${editorStaffLineColor} ${editorLineHeight}px)`,
-      backgroundSize: `100% ${editorLineHeight}px`,
+      backgroundImage: `linear-gradient(to bottom, transparent calc(1lh - 1px), ${editorStaffLineColor} 1lh)`,
+      backgroundSize: '100% 1lh',
       backgroundPosition: `0 ${paddingTop}px`,
       backgroundAttachment: 'local',
     };
@@ -799,7 +799,7 @@ export function SongEditorScreen({
               {audioRecorderStatus === 'recording'
                 ? `Gravando ${recordingSeconds}s / ${AUDIO_NOTE_MAX_SECONDS}s`
                 : audioNoteBase64 && audioNoteMimeType
-                  ? 'Gravação disponÃ­vel'
+                  ? 'Gravação disponível'
                   : 'Nenhuma gravação salva'}
             </Text>
           </View>
@@ -1028,7 +1028,7 @@ export function SongEditorScreen({
       >
         <View style={youtubeLinkStyles.body}>
           <View style={youtubeLinkStyles.infoBox}>
-            <Text style={youtubeLinkStyles.infoTitle}>{title.trim() || 'Sem tÃ­tulo'}</Text>
+            <Text style={youtubeLinkStyles.infoTitle}>{title.trim() || 'Sem título'}</Text>
             <Text style={youtubeLinkStyles.infoText}>
               Cadastre um link do YouTube para abrir uma referência externa desta música quando precisar.
             </Text>

@@ -1,5 +1,5 @@
 import { DEFAULT_THEME_SETTINGS, resolveDisplaySettings } from '../theme/theme';
-import type { DisplaySettings, FavoriteMode, Folder, FolderPlaylistDisplayMode, Genre, GlobalFilter, LastOpenedPlaylist, Playlist, PlaylistItem, PlaylistSection, PlaylistViewMode, QuickPdfId, QuickPdfLink, QuickPdfViewState, Song, SongInput, ThemeSettings } from '../types/models';
+import type { DisplaySettings, FavoriteMode, Folder, FolderPlaylistDisplayMode, Genre, GlobalFilter, HomeShortcutSettings, LastOpenedPlaylist, Playlist, PlaylistItem, PlaylistSection, PlaylistViewMode, QuickPdfId, QuickPdfLink, QuickPdfViewState, Song, SongInput, ThemeSettings } from '../types/models';
 import { normalizeFolderPlaylistDisplayMode } from '../utils/folderPlaylistDisplay';
 import { DEFAULT_GENRE_NAMES, getGenreDisplayName, getSongGenreKeys, normalizeGenreName, uniqueGenres } from '../utils/genres';
 import { appendSongItemIfNeeded, derivePlaylistItemsFromSongIds, getPlaylistSectionItemIds, normalizePlaylistItems, QUICK_PDF_IDS, removeSongFromPlaylistItems } from '../utils/playlistItems';
@@ -19,6 +19,7 @@ export const STORAGE_KEYS = {
   quickPdfs: '@quick_pdfs',
   quickPdfViewState: '@quick_pdf_view_state',
   lastOpenedPlaylist: '@last_opened_playlist',
+  homeShortcutSettings: '@home_shortcut_settings',
   showHomeDashboardOnStart: '@show_home_dashboard_on_start',
   homeDashboardUserName: '@home_dashboard_user_name',
   defaultGenresSeeded: '@default_genres_seeded',
@@ -159,6 +160,14 @@ const normalizeLastOpenedPlaylist = (value: unknown): LastOpenedPlaylist | null 
   const updatedAt = typeof row.updatedAt === 'number' && Number.isFinite(row.updatedAt) ? row.updatedAt : 0;
   if (!playlistId || !playlistName || updatedAt <= 0) return null;
   return { playlistId, playlistName, folderId, updatedAt };
+};
+
+export const normalizeHomeShortcutSettings = (value: unknown): HomeShortcutSettings => {
+  if (!value || typeof value !== 'object') return { mode: 'recent' };
+  const row = value as Record<string, unknown>;
+  if (row.mode === 'favorite' || row.mode === 'favorites') return { mode: 'favorites' };
+  if (row.mode === 'all' || row.mode === 'none') return { mode: row.mode };
+  return { mode: 'recent' };
 };
 
 const normalizePlaylistSections = (sections: unknown, playlistItems: PlaylistItem[]): PlaylistSection[] | undefined => {
@@ -617,6 +626,19 @@ export const db = {
 
   async clearLastOpenedPlaylist(): Promise<void> {
     await AsyncStorage.removeItem(STORAGE_KEYS.lastOpenedPlaylist);
+  },
+
+  async getHomeShortcutSettings(): Promise<HomeShortcutSettings> {
+    return normalizeHomeShortcutSettings(
+      parseJson<unknown>(await AsyncStorage.getItem(STORAGE_KEYS.homeShortcutSettings), null),
+    );
+  },
+
+  async saveHomeShortcutSettings(settings: HomeShortcutSettings): Promise<void> {
+    await AsyncStorage.setItem(
+      STORAGE_KEYS.homeShortcutSettings,
+      JSON.stringify(normalizeHomeShortcutSettings(settings)),
+    );
   },
 
   async getShowHomeDashboardOnStart(): Promise<boolean> {

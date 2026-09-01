@@ -10,10 +10,12 @@ import {
   Music,
   PlayCircle,
   Settings as SettingsIcon,
+  Star,
   User,
   X,
 } from 'lucide-react';
 import { useGenreFilter } from '../contexts/GenreFilterContext';
+import type { DrawerFavoriteShortcut } from '../contexts/DrawerContext';
 import { useSettings } from '../contexts/SettingsContext';
 import type { ManualRoute } from '../navigation/manualTypes';
 import type { LastOpenedPlaylist } from '../types/models';
@@ -28,6 +30,7 @@ interface AppDrawerProps {
     artists: number;
     folders: number;
     lastOpenedPlaylist: LastOpenedPlaylist | null;
+    favoriteShortcuts: DrawerFavoriteShortcut[];
   };
   onClose: () => void;
   onNavigate: (route: ManualRoute) => void;
@@ -36,11 +39,12 @@ interface AppDrawerProps {
 
 export function AppDrawer({ visible, stats, onClose, onNavigate, styles }: AppDrawerProps) {
   const { globalFilters } = useGenreFilter();
-  const { themeSettings } = useSettings();
+  const { homeShortcutSettings, themeSettings } = useSettings();
   const selectedGenres = globalFilters.selectedGenres;
   const artistCount = stats.artists;
   const folderCount = stats.folders;
   const lastOpenedPlaylist = stats.lastOpenedPlaylist;
+  const favoriteShortcuts = stats.favoriteShortcuts;
   const isLightTheme = themeSettings.mode === 'light';
 
   const filterLabel =
@@ -78,6 +82,28 @@ export function AppDrawer({ visible, stats, onClose, onNavigate, styles }: AppDr
       },
     });
   };
+
+  const openFavoriteShortcut = (shortcut: DrawerFavoriteShortcut) => {
+    if (shortcut.type === 'folder') {
+      navigate({ name: 'FolderDetail', params: { folderId: shortcut.id, folderName: shortcut.name } });
+      return;
+    }
+    navigate({
+      name: 'PlaylistDetail',
+      params: {
+        playlistId: shortcut.id,
+        playlistName: shortcut.name,
+        folderId: shortcut.folderId,
+      },
+    });
+  };
+
+  const showFavoriteShortcuts = homeShortcutSettings.mode === 'favorites' || homeShortcutSettings.mode === 'all';
+  const lastOpenedIsFavorite = favoriteShortcuts.some((shortcut) => (
+    shortcut.type === 'playlist' && shortcut.id === lastOpenedPlaylist?.playlistId
+  ));
+  const showRecentShortcut = (homeShortcutSettings.mode === 'recent' || homeShortcutSettings.mode === 'all')
+    && !(homeShortcutSettings.mode === 'all' && lastOpenedIsFavorite);
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
@@ -157,43 +183,67 @@ export function AppDrawer({ visible, stats, onClose, onNavigate, styles }: AppDr
               <Text style={localStyles.statLabel}>Artistas</Text>
             </View>
           </View>
-          <TouchableOpacity
-            accessibilityRole="button"
-            accessibilityLabel="Continuar de onde parou"
-            activeOpacity={lastOpenedPlaylist ? 0.86 : 1}
-            disabled={!lastOpenedPlaylist}
-            onPress={openLastPlaylist}
-            style={[localStyles.continueCard, isLightTheme && localStyles.continueCardLight]}
-          >
-            <View style={[localStyles.continueIcon, isLightTheme && localStyles.continueIconLight]}>
-              <PlayCircle size={18} color="#38bdf8" />
-            </View>
-            <View style={localStyles.continueTextBlock}>
-              <Text style={localStyles.continueTitle}>Continuar de onde parou</Text>
-              <Text style={lastOpenedPlaylist ? localStyles.continuePlaylistName : localStyles.continueSubtitle} numberOfLines={1}>
-                {lastOpenedPlaylist?.playlistName || 'Abra uma lista para continuar depois.'}
-              </Text>
-              {lastOpenedPlaylist ? (
-                <Text style={localStyles.continueSubtitle}>Última lista aberta</Text>
-              ) : null}
-            </View>
+          {showFavoriteShortcuts ? favoriteShortcuts.map((shortcut) => {
+            const tone = shortcut.type === 'playlist' ? '#facc15' : '#a855f7';
+            return (
+              <TouchableOpacity
+                key={`${shortcut.type}-${shortcut.id}`}
+                accessibilityRole="button"
+                accessibilityLabel={`Abrir favorito ${shortcut.name}`}
+                activeOpacity={0.86}
+                onPress={() => openFavoriteShortcut(shortcut)}
+                style={[
+                  localStyles.continueCard,
+                  localStyles.favoriteCard,
+                  isLightTheme && localStyles.continueCardLight,
+                  isLightTheme && localStyles.favoriteCardLight,
+                ]}
+              >
+                <View style={[localStyles.continueIcon, localStyles.favoriteIcon]}>
+                  {shortcut.type === 'playlist' ? (
+                    <ListMusic size={18} color={tone} />
+                  ) : (
+                    <FolderIcon size={18} color={tone} />
+                  )}
+                </View>
+                <View style={localStyles.continueTextBlock}>
+                  <Text style={localStyles.continueTitle}>Favorito</Text>
+                  <Text style={localStyles.continuePlaylistName} numberOfLines={1}>{shortcut.name}</Text>
+                  <Text style={localStyles.continueSubtitle}>{shortcut.type === 'playlist' ? 'Lista' : 'Pasta'}</Text>
+                </View>
+                <Star size={15} color={tone} fill={tone} />
+              </TouchableOpacity>
+            );
+          }) : null}
 
-          </TouchableOpacity>
+          {showRecentShortcut ? (
+            <TouchableOpacity
+              accessibilityRole="button"
+              accessibilityLabel="Continuar de onde parou"
+              activeOpacity={lastOpenedPlaylist ? 0.86 : 1}
+              disabled={!lastOpenedPlaylist}
+              onPress={openLastPlaylist}
+              style={[localStyles.continueCard, isLightTheme && localStyles.continueCardLight]}
+            >
+              <View style={[localStyles.continueIcon, isLightTheme && localStyles.continueIconLight]}>
+                <PlayCircle size={18} color="#38bdf8" />
+              </View>
+              <View style={localStyles.continueTextBlock}>
+                <Text style={localStyles.continueTitle}>Continuar de onde parou</Text>
+                <Text style={lastOpenedPlaylist ? localStyles.continuePlaylistName : localStyles.continueSubtitle} numberOfLines={1}>
+                  {lastOpenedPlaylist?.playlistName || 'Abra uma lista para continuar depois.'}
+                </Text>
+                {lastOpenedPlaylist ? (
+                  <Text style={localStyles.continueSubtitle}>Última lista aberta</Text>
+                ) : null}
+              </View>
+            </TouchableOpacity>
+          ) : null}
         </View>
 
         <ScrollView style={localStyles.scroll} contentContainerStyle={localStyles.scrollContent}>
           <Text style={localStyles.sectionTitle}>Navegação</Text>
           <View style={localStyles.tileGrid}>
-            <DrawerItem
-              label="Músicas"
-              subtitle="Repertório"
-              count={stats.songs}
-              variant="tile"
-              tone="#38bdf8"
-              styles={styles}
-              icon={<Music size={18} color="#38bdf8" />}
-              onPress={() => navigate({ name: 'Songs' })}
-            />
             <DrawerItem
               label="Listas"
               subtitle="Sequências"
@@ -203,6 +253,16 @@ export function AppDrawer({ visible, stats, onClose, onNavigate, styles }: AppDr
               styles={styles}
               icon={<ListMusic size={18} color="#facc15" />}
               onPress={() => navigate({ name: 'Folders' })}
+            />
+            <DrawerItem
+              label="Músicas"
+              subtitle="Repertório"
+              count={stats.songs}
+              variant="tile"
+              tone="#38bdf8"
+              styles={styles}
+              icon={<Music size={18} color="#38bdf8" />}
+              onPress={() => navigate({ name: 'Songs' })}
             />
             <DrawerItem
               label="Pastas"
@@ -455,6 +515,14 @@ const localStyles = StyleSheet.create({
     backgroundImage: 'linear-gradient(135deg, rgba(15,131,201,0.10), rgba(255,253,248,0.92))',
     boxShadow: '0 12px 22px rgba(31,41,55,0.08)',
   },
+  favoriteCard: {
+    borderColor: 'rgba(250,204,21,0.24)',
+    backgroundImage: 'linear-gradient(135deg, rgba(250,204,21,0.10), rgba(15,23,42,0.08))',
+  },
+  favoriteCardLight: {
+    borderColor: 'rgba(215,154,33,0.24)',
+    backgroundImage: 'linear-gradient(135deg, rgba(215,154,33,0.10), rgba(255,253,248,0.94))',
+  },
   continueIcon: {
     width: 38,
     height: 38,
@@ -468,6 +536,10 @@ const localStyles = StyleSheet.create({
   continueIconLight: {
     borderColor: 'rgba(15,131,201,0.18)',
     backgroundColor: 'rgba(15,131,201,0.10)',
+  },
+  favoriteIcon: {
+    borderColor: 'rgba(250,204,21,0.26)',
+    backgroundColor: 'rgba(250,204,21,0.12)',
   },
   continueTextBlock: {
     flex: 1,

@@ -126,6 +126,42 @@ function AppContent() {
     searchOn: false,
     scrollOffset: 0,
   });
+  const artistsScreenSessionRef = React.useRef({
+    query: '',
+    searchOn: false,
+    scrollOffset: 0,
+  });
+  const foldersScreenSessionRef = React.useRef<{
+    query: string;
+    searchOn: boolean;
+    viewFilter: 'all' | 'playlists' | 'folders';
+    scrollOffset: number;
+  }>({
+    query: '',
+    searchOn: false,
+    viewFilter: 'all',
+    scrollOffset: 0,
+  });
+  const folderDetailScreenSessionsRef = React.useRef<Record<string, { scrollOffset: number }>>({});
+  const getFolderDetailScreenSession = React.useCallback((folderId: string) => {
+    const existing = folderDetailScreenSessionsRef.current[folderId];
+    if (existing) return existing;
+    const created = { scrollOffset: 0 };
+    folderDetailScreenSessionsRef.current[folderId] = created;
+    return created;
+  }, []);
+  const playlistDetailScreenSessionsRef = React.useRef<Record<string, {
+    query: string;
+    searchOn: boolean;
+    scrollOffset: number;
+  }>>({});
+  const getPlaylistDetailScreenSession = React.useCallback((playlistId: string) => {
+    const existing = playlistDetailScreenSessionsRef.current[playlistId];
+    if (existing) return existing;
+    const created = { query: '', searchOn: false, scrollOffset: 0 };
+    playlistDetailScreenSessionsRef.current[playlistId] = created;
+    return created;
+  }, []);
   const startupRouteOverriddenRef = React.useRef(false);
   const { drawerOpen, drawerStats, openDrawer, closeDrawer } = useDrawer();
   const { topBarControls, songEditorHeaderControls } = useTopBarState();
@@ -450,6 +486,7 @@ function AppContent() {
       {route.name === 'Artists' && (
         <ArtistsScreen
           styles={styles}
+          sessionState={artistsScreenSessionRef.current}
         />
       )}
       {route.name === 'ArtistDetail' && (
@@ -473,6 +510,7 @@ function AppContent() {
       {route.name === 'Folders' && (
         <FoldersScreen
           styles={styles}
+          sessionState={foldersScreenSessionRef.current}
         />
       )}
       {route.name === 'Import' && (
@@ -509,6 +547,7 @@ function AppContent() {
           currentFolderName={route.params.folderName}
           openAddOnEnter={route.params.openAddOnEnter}
           styles={styles}
+          sessionState={getFolderDetailScreenSession(route.params.folderId)}
         />
       )}
       {route.name === 'PlaylistDetail' && (
@@ -519,6 +558,7 @@ function AppContent() {
           folderName={route.params.folderName}
           openAddOnEnter={route.params.openAddOnEnter}
           styles={styles}
+          sessionState={getPlaylistDetailScreenSession(route.params.playlistId)}
         />
       )}
       {route.name === 'PlaylistStructure' && (

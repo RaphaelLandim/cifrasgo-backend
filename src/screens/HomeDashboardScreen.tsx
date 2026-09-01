@@ -648,7 +648,7 @@ export function HomeDashboardScreen() {
             </View>
             <View style={styles.favoriteModalText}>
               <Text style={styles.favoriteModalTitle} numberOfLines={1}>{playlist.name}</Text>
-              <Text style={styles.favoriteModalHint} numberOfLines={1}>{getPlaylistSongCount(playlist)} mÃºsicas</Text>
+              <Text style={styles.favoriteModalHint} numberOfLines={1}>{getPlaylistSongCount(playlist)} músicas</Text>
             </View>
             <ChevronRight size={18} color="var(--app-subtle-text)" />
           </TouchableOpacity>

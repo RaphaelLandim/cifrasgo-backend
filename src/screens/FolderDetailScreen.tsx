@@ -150,6 +150,9 @@ interface FolderDetailScreenProps {
   currentFolderName?: string;
   openAddOnEnter?: boolean;
   styles: any;
+  sessionState: {
+    scrollOffset: number;
+  };
 }
 
 export function FolderDetailScreen({
@@ -157,6 +160,7 @@ export function FolderDetailScreen({
   currentFolderName,
   openAddOnEnter,
   styles,
+  sessionState,
 }: FolderDetailScreenProps) {
   useDevScreenPerformance('FolderDetail');
   const nav = useManualNavigation();
@@ -491,25 +495,25 @@ export function FolderDetailScreen({
   };
   const renderFolderHierarchyIcon = (targetFolder: Folder, size = 17) => {
     const depth = getFolderDepth(targetFolder.id, allFolders);
-    if (depth <= 1) return <FolderIcon size={size} color="#4FC3F7" />;
+    if (depth <= 1) return <FolderIcon size={size} color="#a855f7" />;
 
     return (
       <View style={{ width: size + 5, height: size + 3, position: 'relative' }}>
         <FolderIcon
           size={size - 3}
-          color="#2f8fbd"
+          color="#7e22ce"
           style={{ position: 'absolute', left: depth >= 3 ? 0 : 1, top: 0, opacity: 0.78 } as any}
         />
         <FolderIcon
           size={size}
-          color="#4FC3F7"
+          color="#a855f7"
           style={{ position: 'absolute', left: depth >= 3 ? 5 : 4, top: depth >= 3 ? 4 : 3 } as any}
         />
       </View>
     );
   };
-  const renderFolderListIconTile = (icon: React.ReactNode) => (
-    <View style={localStyles.listIconTile}>
+  const renderFolderListIconTile = (icon: React.ReactNode, isFolder = false) => (
+    <View style={[localStyles.listIconTile, isFolder && localStyles.folderListIconTile]}>
       {icon}
     </View>
   );
@@ -886,7 +890,7 @@ export function FolderDetailScreen({
         })}
       >
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-          {renderFolderListIconTile(renderFolderHierarchyIcon(item.folder, 18))}
+          {renderFolderListIconTile(renderFolderHierarchyIcon(item.folder, 18), true)}
 
           <View style={styles.listRowText}>
             <Text style={styles.title}>{item.folder.name}</Text>
@@ -955,6 +959,11 @@ export function FolderDetailScreen({
         maxToRenderPerBatch={16}
         windowSize={7}
         removeClippedSubviews={false}
+        contentOffset={{ x: 0, y: sessionState.scrollOffset }}
+        scrollEventThrottle={100}
+        onScroll={(event: { nativeEvent: { contentOffset: { y: number } } }) => {
+          sessionState.scrollOffset = Math.max(0, event.nativeEvent.contentOffset.y || 0);
+        }}
         contentContainerStyle={{ paddingBottom: 140 }}
         renderItem={({ item: row }: { item: FolderDetailListRow }) => {
           if (row.type === 'label') {
@@ -1008,7 +1017,7 @@ export function FolderDetailScreen({
             {canCreateChildFolder ? (
               <TouchableOpacity style={[styles.card, { marginHorizontal: 0 }]} onPress={() => { setOpenActions(false); setOpenFolder(true); }}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                  <FolderIcon size={17} color="#4FC3F7" />
+                  <FolderIcon size={17} color="#a855f7" />
                   <Text style={styles.title}>{childFolderLabel}</Text>
                 </View>
                 <ChevronRight size={18} color="#777" />
@@ -1039,7 +1048,7 @@ export function FolderDetailScreen({
                 }}
               >
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                  <FolderPlus size={17} color="#4FC3F7" />
+                  <FolderPlus size={17} color="#a855f7" />
                   <Text style={styles.title}>Adicionar subpasta</Text>
                 </View>
                 <ChevronRight size={18} color="#777" />
@@ -1074,7 +1083,7 @@ export function FolderDetailScreen({
         visible={openAddExistingFolder}
         title="Adicionar subpasta"
         onClose={closeAddExistingFolderModal}
-        icon={<FolderPlus size={16} color="#4FC3F7" />}
+        icon={<FolderPlus size={16} color="#a855f7" />}
         maxWidth={520}
         footer={
           <>
@@ -1293,7 +1302,7 @@ export function FolderDetailScreen({
         visible={openFolder}
         title="Nova pasta"
         onClose={() => setOpenFolder(false)}
-        icon={<FolderPlus size={16} color="#4FC3F7" />}
+        icon={<FolderPlus size={16} color="#a855f7" />}
         footer={
           <>
             <TouchableOpacity onPress={() => setOpenFolder(false)}>
@@ -1466,7 +1475,7 @@ export function FolderDetailScreen({
             setOpenFolderItemActions(false);
             setSelectedFolderItem(null);
           }}
-          icon={<FolderIcon size={16} color="#4FC3F7" />}
+          icon={<FolderIcon size={16} color="#a855f7" />}
           footer={
             <TouchableOpacity
               onPress={() => {
@@ -1507,7 +1516,7 @@ export function FolderDetailScreen({
             }}
           >
             <View style={styles.createOptionLeft}>
-              <FolderIcon size={17} color="#4FC3F7" />
+              <FolderIcon size={17} color="#a855f7" />
               <Text style={styles.modalActionText}>Enviar para pasta...</Text>
             </View>
 
@@ -1573,7 +1582,7 @@ export function FolderDetailScreen({
         visible={openRenameFolderItem}
         title="Editar nome da subpasta"
         onClose={() => setOpenRenameFolderItem(false)}
-        icon={<FolderPlus size={16} color="#4FC3F7" />}
+        icon={<FolderPlus size={16} color="#a855f7" />}
         footer={
           <>
             <TouchableOpacity onPress={() => setOpenRenameFolderItem(false)}>
@@ -1599,7 +1608,7 @@ export function FolderDetailScreen({
         visible={openMoveFolderItem}
         title="Enviar para pasta"
         onClose={() => setOpenMoveFolderItem(false)}
-        icon={<FolderIcon size={16} color="#4FC3F7" />}
+        icon={<FolderIcon size={16} color="#a855f7" />}
         footer={
           <TouchableOpacity onPress={() => setOpenMoveFolderItem(false)}>
             <Text style={{ color: '#aaa', fontWeight: '800' }}>Fechar</Text>
@@ -1687,7 +1696,7 @@ export function FolderDetailScreen({
         </TouchableOpacity>
         <TouchableOpacity style={[styles.modalActionBtn, styles.songActionOptionBtn]} onPress={removeSelectedPlaylistFromFolder}>
           <View style={styles.createOptionLeft}>
-            <FolderIcon size={17} color="#4FC3F7" />
+            <FolderIcon size={17} color="#a855f7" />
             <Text style={styles.modalActionText}>Sair da pasta</Text>
           </View>
           <ChevronRight size={18} color="#777" />
@@ -1789,5 +1798,10 @@ const localStyles = StyleSheet.create({
     borderColor: 'rgba(56, 189, 248, 0.22)',
     boxShadow: '0 10px 20px rgba(14, 165, 233, 0.10)',
     flexShrink: 0,
+  },
+  folderListIconTile: {
+    backgroundColor: 'rgba(168, 85, 247, 0.12)',
+    borderColor: 'rgba(168, 85, 247, 0.24)',
+    boxShadow: '0 10px 20px rgba(168, 85, 247, 0.10)',
   },
 });

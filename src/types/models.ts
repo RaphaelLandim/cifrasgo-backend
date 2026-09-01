@@ -109,6 +109,12 @@ export interface LastOpenedPlaylist {
   updatedAt: number;
 }
 
+export type HomeShortcutDisplayMode = 'recent' | 'favorites' | 'all' | 'none';
+
+export interface HomeShortcutSettings {
+  mode: HomeShortcutDisplayMode;
+}
+
 export interface Genre {
   id: string;
   name: string;

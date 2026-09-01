@@ -26,7 +26,7 @@ export function MetronomeIndicators({
     <View style={styles.indicatorRow}>
       <TouchableOpacity
         accessibilityRole="button"
-        accessibilityLabel="Alternar metrÃ´nomo visual"
+        accessibilityLabel="Alternar metrônomo visual"
         onPress={onToggleVisual}
         style={[
           styles.indicator,

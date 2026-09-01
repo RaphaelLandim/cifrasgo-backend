@@ -10,17 +10,23 @@ import { matchesGenreFilter } from '../utils/genres';
 
 interface ArtistsScreenProps {
   styles: any;
+  sessionState: {
+    query: string;
+    searchOn: boolean;
+    scrollOffset: number;
+  };
 }
 
 export function ArtistsScreen({
   styles,
+  sessionState,
 }: ArtistsScreenProps) {
   const nav = useManualNavigation();
   const { setTopBarControls, clearTopBarControls } = useTopBarControls();
   const { globalFilters } = useGenreFilter();
   const [songs, setSongs] = useState<Song[]>([]);
-  const [q, setQ] = useState('');
-  const [searchOn, setSearchOn] = useState(false);
+  const [q, setQ] = useState(() => sessionState.query);
+  const [searchOn, setSearchOn] = useState(() => sessionState.searchOn);
 
   useEffect(() => {
     db.getSongs().then(setSongs);
@@ -45,12 +51,21 @@ export function ArtistsScreen({
       onSearchPress: () => {
         const next = !searchOn;
         setSearchOn(next);
-        if (!next) setQ('');
+        sessionState.searchOn = next;
+        if (!next) {
+          setQ('');
+          sessionState.query = '';
+        }
       },
       showAdd: false,
     });
     return clearTopBarControls;
-  }, [clearTopBarControls, searchOn, setTopBarControls]);
+  }, [clearTopBarControls, searchOn, sessionState, setTopBarControls]);
+
+  const handleSearchChange = (value: string) => {
+    sessionState.query = value;
+    setQ(value);
+  };
 
   return (
     <View style={{ flex: 1 }}>
@@ -62,7 +77,7 @@ export function ArtistsScreen({
             placeholder="Buscar artista..."
             placeholderTextColor="#666"
             value={q}
-            onChangeText={setQ}
+            onChangeText={handleSearchChange}
             autoFocus
           />
         </View>
@@ -70,6 +85,11 @@ export function ArtistsScreen({
       <FlatList
         data={artists}
         keyExtractor={(artist: string) => artist}
+        contentOffset={{ x: 0, y: sessionState.scrollOffset }}
+        scrollEventThrottle={100}
+        onScroll={(event: { nativeEvent: { contentOffset: { y: number } } }) => {
+          sessionState.scrollOffset = Math.max(0, event.nativeEvent.contentOffset.y || 0);
+        }}
         contentContainerStyle={{ paddingBottom: 120 }}
         renderItem={({ item: artist }: { item: string }) => (
           <TouchableOpacity style={styles.listRow} onPress={() => nav.navigate('ArtistDetail', { artist })}>

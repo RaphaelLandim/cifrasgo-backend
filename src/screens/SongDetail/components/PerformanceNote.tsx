@@ -96,7 +96,7 @@ export function PerformanceNote({
         <div style={styles.pin} />
         <button
           type="button"
-          aria-label="OpÃƒÂ§ÃƒÂµes do post-it"
+          aria-label="Opções do post-it"
           style={{
             ...styles.menuButton,
             ...menuHighlightStyle,
