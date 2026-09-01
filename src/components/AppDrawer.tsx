@@ -189,9 +189,9 @@ export function AppDrawer({ visible, stats, onClose, onNavigate, styles }: AppDr
               subtitle="Repertório"
               count={stats.songs}
               variant="tile"
-              tone="#facc15"
+              tone="#38bdf8"
               styles={styles}
-              icon={<Music size={18} color="#facc15" />}
+              icon={<Music size={18} color="#38bdf8" />}
               onPress={() => navigate({ name: 'Songs' })}
             />
             <DrawerItem
@@ -199,9 +199,19 @@ export function AppDrawer({ visible, stats, onClose, onNavigate, styles }: AppDr
               subtitle="Sequências"
               count={stats.playlists}
               variant="tile"
-              tone="#38bdf8"
+              tone="#facc15"
               styles={styles}
-              icon={<ListMusic size={18} color="#38bdf8" />}
+              icon={<ListMusic size={18} color="#facc15" />}
+              onPress={() => navigate({ name: 'Folders' })}
+            />
+            <DrawerItem
+              label="Pastas"
+              subtitle="Organização"
+              count={folderCount}
+              variant="tile"
+              tone="#a855f7"
+              styles={styles}
+              icon={<FolderIcon size={18} color="#a855f7" />}
               onPress={() => navigate({ name: 'Folders' })}
             />
             <DrawerItem
@@ -213,16 +223,6 @@ export function AppDrawer({ visible, stats, onClose, onNavigate, styles }: AppDr
               styles={styles}
               icon={<User size={18} color="#22c55e" />}
               onPress={() => navigate({ name: 'Artists' })}
-            />
-            <DrawerItem
-              label="Pastas"
-              subtitle="Organização"
-              count={folderCount}
-              variant="tile"
-              tone="#a855f7"
-              styles={styles}
-              icon={<FolderIcon size={18} color="#a855f7" />}
-              onPress={() => navigate({ name: 'Folders' })}
             />
           </View>
 
