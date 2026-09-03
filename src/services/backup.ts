@@ -3,6 +3,14 @@ import pako from 'pako';
 import type { Folder, Genre, Playlist, PlaylistSection, PlaylistViewMode, Song, SongInput } from '../types/models';
 import { getSongGenreKeys, normalizeGenreName } from '../utils/genres';
 import { buildCifrasGoSongTextFile, CIFRASGO_SONG_MARKER, parseCifrasGoSongTextFile } from './songTextFormat';
+import {
+  createSongRecordingPath,
+  deleteSongRecordingFile,
+  normalizeSongRecordingPath,
+  readSongRecordingFile,
+  saveSongRecordingFile,
+  songRecordingBase64ToBlob,
+} from './songRecordingFiles';
 import { db } from './storage';
 
 export interface RestoreProgress {
@@ -31,6 +39,10 @@ export interface CustomBackupSelection {
   folderIds: string[];
 }
 
+export interface BackupBuildOptions {
+  includeAudioRecordings?: boolean;
+}
+
 const uid = () => Math.random().toString(36).slice(2, 11);
 
 const CIFRASGO_PLAYLIST_MANIFEST = 'cifrasgo-playlist.json';
@@ -40,8 +52,9 @@ const CIFRASGO_FULL_BACKUP_MANIFEST = 'cifrasgo-backup.json';
 interface CifrasGoFullBackupManifest {
   app: 'CifrasGo';
   format: 'full-backup';
-  version: 1;
+  version: 1 | 2;
   createdAt: number;
+  includesAudioRecordings?: boolean;
   contains: {
     songs: boolean;
     folders: boolean;
@@ -85,7 +98,8 @@ interface CifrasGoPlaylistManifest {
 interface CifrasGoFolderManifest {
   app: 'CifrasGo';
   format: 'folder';
-  version: 1;
+  version: 1 | 2;
+  includesAudioRecordings?: boolean;
   exportedAt: number;
   rootFolderId: string;
   rootFolderName: string;
@@ -354,7 +368,7 @@ const parseFullBackupManifest = (text: string): CifrasGoFullBackupManifest => {
     throw new Error('Manifest do backup completo CifrasGo invalido.');
   }
 
-  if (manifest.app !== 'CifrasGo' || manifest.format !== 'full-backup' || manifest.version !== 1) {
+  if (manifest.app !== 'CifrasGo' || manifest.format !== 'full-backup' || (manifest.version !== 1 && manifest.version !== 2)) {
     throw new Error('Formato de backup completo CifrasGo nao suportado.');
   }
 
@@ -369,7 +383,7 @@ const parseFolderBackupManifest = (text: string): CifrasGoFolderManifest => {
     throw new Error('Manifest da pasta CifrasGo invalido.');
   }
 
-  if (manifest.app !== 'CifrasGo' || manifest.format !== 'folder' || manifest.version !== 1) {
+  if (manifest.app !== 'CifrasGo' || manifest.format !== 'folder' || (manifest.version !== 1 && manifest.version !== 2)) {
     throw new Error('Formato de pasta CifrasGo nao suportado.');
   }
 
@@ -425,7 +439,134 @@ const appendReadableBackupFiles = (
   });
 };
 
-export const buildCifrasGoFullBackupZip = async (): Promise<Blob> => {
+const stripSongAudio = (song: Song): Song => {
+  const copy = { ...song };
+  delete copy.audioNoteFile;
+  delete copy.audioNoteBase64;
+  delete copy.audioNoteMimeType;
+  delete copy.audioNoteUpdatedAt;
+  return copy;
+};
+
+const prepareSongsForBackup = async (
+  zip: JSZip,
+  songs: Song[],
+  includeAudioRecordings: boolean,
+): Promise<Song[]> => {
+  if (!includeAudioRecordings) return songs.map(stripSongAudio);
+
+  const prepared: Song[] = [];
+  for (const song of songs) {
+    const copy = { ...song };
+    if (song.audioNoteFile?.trim()) {
+      if (!song.audioNoteMimeType?.trim()) {
+        throw new Error(`A gravacao de "${song.title}" esta sem tipo de arquivo.`);
+      }
+      let path: string;
+      try {
+        path = normalizeSongRecordingPath(song.audioNoteFile);
+        const blob = await readSongRecordingFile(path, song.audioNoteMimeType);
+        zip.file(path, await blob.arrayBuffer());
+      } catch {
+        throw new Error(`A gravacao de "${song.title}" foi referenciada, mas o arquivo local nao foi encontrado.`);
+      }
+      copy.audioNoteFile = path;
+      delete copy.audioNoteBase64;
+    } else if (song.audioNoteBase64?.trim()) {
+      if (!song.audioNoteMimeType?.trim()) {
+        throw new Error(`A gravacao legada de "${song.title}" esta sem tipo de arquivo.`);
+      }
+      try {
+        const path = createSongRecordingPath(song.audioNoteMimeType);
+        const blob = songRecordingBase64ToBlob(song.audioNoteBase64, song.audioNoteMimeType);
+        zip.file(path, await blob.arrayBuffer());
+        copy.audioNoteFile = path;
+        delete copy.audioNoteBase64;
+      } catch {
+        throw new Error(`A gravacao legada de "${song.title}" esta corrompida e nao pode ser exportada.`);
+      }
+    } else {
+      prepared.push(stripSongAudio(copy));
+      continue;
+    }
+    prepared.push(copy);
+  }
+  return prepared;
+};
+
+interface PreparedImportedRecordings {
+  songs: Song[];
+  createdFiles: string[];
+}
+
+const prepareImportedRecordings = async (
+  zip: JSZip,
+  songs: Song[],
+  includesAudioRecordings?: boolean,
+): Promise<PreparedImportedRecordings> => {
+  if (includesAudioRecordings === false) {
+    return { songs: songs.map(stripSongAudio), createdFiles: [] };
+  }
+
+  const createdFiles: string[] = [];
+  const prepared: Song[] = [];
+  try {
+    for (const song of songs) {
+      const copy = { ...song };
+      let blob: Blob | null = null;
+      if (song.audioNoteFile?.trim()) {
+        if (!song.audioNoteMimeType?.trim()) {
+          throw new Error(`A gravacao de "${song.title}" esta sem tipo de arquivo.`);
+        }
+        let archivePath: string;
+        try {
+          archivePath = normalizeSongRecordingPath(song.audioNoteFile);
+        } catch {
+          throw new Error(`A referencia da gravacao de "${song.title}" e invalida.`);
+        }
+        const recordingEntry = zip.file(archivePath);
+        if (!recordingEntry || recordingEntry.dir) {
+          throw new Error(`O arquivo da gravacao de "${song.title}" nao existe dentro do backup.`);
+        }
+        const bytes = await recordingEntry.async('uint8array');
+        if (!bytes.length) throw new Error(`O arquivo da gravacao de "${song.title}" esta vazio.`);
+        blob = new Blob([bytes.slice().buffer], { type: song.audioNoteMimeType });
+      } else if (song.audioNoteBase64?.trim()) {
+        if (!song.audioNoteMimeType?.trim()) {
+          throw new Error(`A gravacao legada de "${song.title}" esta sem tipo de arquivo.`);
+        }
+        try {
+          blob = songRecordingBase64ToBlob(song.audioNoteBase64, song.audioNoteMimeType);
+        } catch {
+          throw new Error(`A gravacao legada de "${song.title}" esta corrompida.`);
+        }
+      }
+
+      if (blob && song.audioNoteMimeType) {
+        let localPath: string;
+        try {
+          localPath = await saveSongRecordingFile(blob, song.audioNoteMimeType);
+        } catch {
+          throw new Error(`Nao foi possivel gravar o audio restaurado de "${song.title}".`);
+        }
+        createdFiles.push(localPath);
+        copy.audioNoteFile = localPath;
+        delete copy.audioNoteBase64;
+        prepared.push(copy);
+      } else {
+        prepared.push(stripSongAudio(copy));
+      }
+    }
+    return { songs: prepared, createdFiles };
+  } catch (error) {
+    await Promise.all(createdFiles.map((path) => deleteSongRecordingFile(path)));
+    throw error;
+  }
+};
+
+export const buildCifrasGoFullBackupZip = async (
+  options: BackupBuildOptions = {}
+): Promise<Blob> => {
   const [
     songs,
     folders,
@@ -446,12 +587,15 @@ export const buildCifrasGoFullBackupZip = async (): Promise<Blob> => {
     db.getGlobalFilters(),
   ]);
 
+  const includeAudioRecordings = options.includeAudioRecordings !== false;
   const zip = new JSZip();
+  const exportedSongs = await prepareSongsForBackup(zip, songs, includeAudioRecordings);
   const manifest: CifrasGoFullBackupManifest = {
     app: 'CifrasGo',
     format: 'full-backup',
-    version: 1,
+    version: 2,
     createdAt: Date.now(),
+    includesAudioRecordings: includeAudioRecordings,
     contains: {
       songs: true,
       folders: true,
@@ -470,19 +614,22 @@ export const buildCifrasGoFullBackupZip = async (): Promise<Blob> => {
   };
 
   zip.file(CIFRASGO_FULL_BACKUP_MANIFEST, JSON.stringify(manifest, null, 2));
-  zip.file('data/songs.json', JSON.stringify(songs, null, 2));
+  zip.file('data/songs.json', JSON.stringify(exportedSongs, null, 2));
   zip.file('data/folders.json', JSON.stringify(folders, null, 2));
   zip.file('data/playlists.json', JSON.stringify(playlists, null, 2));
   zip.file('data/folder-songs.json', JSON.stringify(folderSongs, null, 2));
   zip.file('data/genres.json', JSON.stringify(genres, null, 2));
   zip.file('data/settings.json', JSON.stringify(settings, null, 2));
 
-  appendReadableBackupFiles(zip, songs, playlists, folders);
+  appendReadableBackupFiles(zip, exportedSongs, playlists, folders);
 
   return zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
 };
 
-export const buildCifrasGoCustomBackupZip = async (selection: CustomBackupSelection): Promise<Blob> => {
+export const buildCifrasGoCustomBackupZip = async (
+  selection: CustomBackupSelection,
+  options: BackupBuildOptions = {}
+): Promise<Blob> => {
   const [songs, folders, playlists, folderSongs, genres] = await Promise.all([
     db.getSongs(),
     db.getFolders(),
@@ -553,12 +700,15 @@ export const buildCifrasGoCustomBackupZip = async (selection: CustomBackupSelect
     return exportedSongs.some((song) => getSongGenreKeys(song).includes(key));
   });
 
+  const includeAudioRecordings = options.includeAudioRecordings !== false;
   const zip = new JSZip();
+  const backupSongs = await prepareSongsForBackup(zip, exportedSongs, includeAudioRecordings);
   const manifest: CifrasGoFullBackupManifest = {
     app: 'CifrasGo',
     format: 'full-backup',
-    version: 1,
+    version: 2,
     createdAt: Date.now(),
+    includesAudioRecordings: includeAudioRecordings,
     contains: {
       songs: exportedSongs.length > 0,
       folders: exportedFolders.length > 0,
@@ -572,12 +722,12 @@ export const buildCifrasGoCustomBackupZip = async (selection: CustomBackupSelect
   };
 
   zip.file(CIFRASGO_FULL_BACKUP_MANIFEST, JSON.stringify(manifest, null, 2));
-  zip.file('data/songs.json', JSON.stringify(exportedSongs, null, 2));
+  zip.file('data/songs.json', JSON.stringify(backupSongs, null, 2));
   zip.file('data/folders.json', JSON.stringify(exportedFolders, null, 2));
   zip.file('data/playlists.json', JSON.stringify(exportedPlaylists, null, 2));
   zip.file('data/folder-songs.json', JSON.stringify(exportedFolderSongs, null, 2));
   zip.file('data/genres.json', JSON.stringify(exportedGenres, null, 2));
-  appendReadableBackupFiles(zip, exportedSongs, exportedPlaylists, exportedFolders);
+  appendReadableBackupFiles(zip, backupSongs, exportedPlaylists, exportedFolders);
 
   return zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
 };
@@ -618,12 +768,14 @@ export const buildCifrasGoFolderBackupZip = async (folderId: string): Promise<Bl
     });
   });
 
-  const exportedSongs = songs.filter((song) => songIds.has(song.id));
+  const sourceSongs = songs.filter((song) => songIds.has(song.id));
   const zip = new JSZip();
+  const exportedSongs = await prepareSongsForBackup(zip, sourceSongs, true);
   const manifest: CifrasGoFolderManifest = {
     app: 'CifrasGo',
     format: 'folder',
-    version: 1,
+    version: 2,
+    includesAudioRecordings: true,
     exportedAt: Date.now(),
     rootFolderId: folderId,
     rootFolderName: rootFolder.name || 'Pasta',
@@ -690,7 +842,8 @@ export const restoreCifrasGoSongTextFile = async (file: File): Promise<RestoreSo
 const restoreCifrasGoDataZip = async (
   zip: JSZip,
   options: RestoreBackupOptions = {},
-  sourceLabel = 'Backup completo CifrasGo'
+  sourceLabel = 'Backup completo CifrasGo',
+  includesAudioRecordings?: boolean
 ): Promise<RestoreBackupResult> => {
   options.onProgress?.({ done: 0, total: 5 });
 
@@ -700,7 +853,11 @@ const restoreCifrasGoDataZip = async (
   const importedFolderSongsRaw = await readZipJsonFile<unknown>(zip, 'data/folder-songs.json', {});
   const importedGenresRaw = await readZipJsonFile<unknown>(zip, 'data/genres.json', []);
 
-  const importedSongs = Array.isArray(importedSongsRaw) ? (importedSongsRaw as Song[]) : [];
+  const importedSongRows = Array.isArray(importedSongsRaw)
+    ? (importedSongsRaw as Song[]).filter((song) => !!song?.id)
+    : [];
+  const preparedRecordings = await prepareImportedRecordings(zip, importedSongRows, includesAudioRecordings);
+  const importedSongs = preparedRecordings.songs;
   const importedFolders = Array.isArray(importedFoldersRaw)
     ? (importedFoldersRaw as Folder[]).map((folder) => ({ ...folder, parentId: folder.parentId ?? null }))
     : [];
@@ -713,17 +870,26 @@ const restoreCifrasGoDataZip = async (
       : {};
   const importedGenres = Array.isArray(importedGenresRaw) ? (importedGenresRaw as Genre[]) : [];
 
-  const existingSongs = await db.getSongs();
+  let existingSongs: Song[];
+  try {
+    existingSongs = await db.getSongs();
+  } catch (error) {
+    await Promise.all(preparedRecordings.createdFiles.map((path) => deleteSongRecordingFile(path)));
+    throw error;
+  }
   const nextSongs = [...existingSongs];
   const createdSongs: Song[] = [];
   const songIdByOldId = new Map<string, string>();
   const songIndexByKey = new Map(nextSongs.map((song, index) => [songDedupKey(song.artist, song.title), index]));
   const songIdByKey = new Map(nextSongs.map((song) => [songDedupKey(song.artist, song.title), song.id]));
+  const oldRecordingFiles = new Set<string>();
+  const usedImportedRecordingFiles = new Set<string>();
   let songsCreated = 0;
   let songsMerged = 0;
 
   for (const importedSong of importedSongs) {
     if (!importedSong?.id) continue;
+    const importedSongData = importedSong;
     const title = importedSong.title || 'Sem titulo';
     const artist = importedSong.artist || '';
     const key = songDedupKey(artist, title);
@@ -734,9 +900,15 @@ const restoreCifrasGoDataZip = async (
       const existingIndex = songIndexByKey.get(key);
       if (existingIndex != null) {
         const current = nextSongs[existingIndex];
+        if (importedSongData.audioNoteFile) {
+          usedImportedRecordingFiles.add(importedSongData.audioNoteFile);
+          if (current.audioNoteFile && current.audioNoteFile !== importedSongData.audioNoteFile) {
+            oldRecordingFiles.add(current.audioNoteFile);
+          }
+        }
         nextSongs[existingIndex] = {
           ...current,
-          ...importedSong,
+          ...importedSongData,
           id: current.id,
           title: title.trim(),
           artist: artist.trim(),
@@ -748,21 +920,35 @@ const restoreCifrasGoDataZip = async (
     }
 
     const createdSong: Song = {
-      ...importedSong,
+      ...importedSongData,
       id: uid(),
       title: title.trim(),
       artist: artist.trim(),
       updatedAt: Date.now(),
     };
     createdSongs.push(createdSong);
+    if (createdSong.audioNoteFile) usedImportedRecordingFiles.add(createdSong.audioNoteFile);
     songIdByOldId.set(importedSong.id, createdSong.id);
     songIdByKey.set(key, createdSong.id);
     songsCreated += 1;
   }
 
-  if (songsCreated || songsMerged) {
-    await db.saveSongs([...createdSongs, ...nextSongs]);
+  const committedSongs = [...createdSongs, ...nextSongs];
+  try {
+    if (songsCreated || songsMerged) {
+      await db.saveSongs(committedSongs);
+    }
+  } catch (error) {
+    await Promise.all(preparedRecordings.createdFiles.map((path) => deleteSongRecordingFile(path)));
+    throw error;
   }
+  const unusedImportedFiles = preparedRecordings.createdFiles.filter((path) => !usedImportedRecordingFiles.has(path));
+  const activeRecordingFiles = new Set(committedSongs.flatMap((song) => song.audioNoteFile ? [song.audioNoteFile] : []));
+  const obsoleteFiles = [...oldRecordingFiles, ...unusedImportedFiles].filter((path) => !activeRecordingFiles.has(path));
+  await Promise.all(obsoleteFiles.map(async (path) => {
+    const deleted = await deleteSongRecordingFile(path);
+    if (!deleted) console.warn('[CifrasGo] Nao foi possivel remover uma gravacao substituida durante o restore.');
+  }));
   options.onProgress?.({ done: 1, total: 5 });
 
   const existingGenres = await db.getGenres();
@@ -912,6 +1098,9 @@ const restoreCifrasGoDataZip = async (
 return {
   message:
     `${sourceLabel} restaurado em modo mesclar.\n\n` +
+    (includesAudioRecordings === false
+      ? 'Este backup foi criado sem gravacoes de audio. Gravacoes locais existentes foram preservadas.\n\n'
+      : '') +
     `- Musicas: ${songsCreated} criadas, ${songsMerged} atualizadas/reaproveitadas.\n` +
     `- Generos: ${genresToCreate.length} adicionados.\n` +
     `- Pastas: ${createdFolders.length} criadas.\n` +
@@ -928,8 +1117,13 @@ const restoreCifrasGoFullBackupZip = async (
 ): Promise<RestoreBackupResult> => {
   const manifestText = await readZipTextFile(zip, manifestFileName);
   if (!manifestText) throw new Error('Manifest do backup completo CifrasGo nao encontrado.');
-  parseFullBackupManifest(manifestText);
-  return restoreCifrasGoDataZip(zip, options, 'Backup completo CifrasGo');
+  const manifest = parseFullBackupManifest(manifestText);
+  return restoreCifrasGoDataZip(
+    zip,
+    options,
+    'Backup completo CifrasGo',
+    manifest.includesAudioRecordings
+  );
 };
 
 const restoreCifrasGoFolderZip = async (
@@ -941,7 +1135,7 @@ const restoreCifrasGoFolderZip = async (
   if (!manifestText) throw new Error('Manifest da pasta CifrasGo nao encontrado.');
   const manifest = parseFolderBackupManifest(manifestText);
   const label = `Pasta "${manifest.rootFolderName || 'Pasta'}"`;
-  return restoreCifrasGoDataZip(zip, options, label);
+  return restoreCifrasGoDataZip(zip, options, label, manifest.includesAudioRecordings);
 };
 
 const restoreCifrasGoPlaylistZip = async (

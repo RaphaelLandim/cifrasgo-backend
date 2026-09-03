@@ -35,6 +35,7 @@ export interface Song {
   compasso?: SongCompasso;
   beepVisualEnabled?: boolean;
   beepSoundEnabled?: boolean;
+  audioNoteFile?: string;
   audioNoteBase64?: string;
   audioNoteMimeType?: string;
   audioNoteUpdatedAt?: number;

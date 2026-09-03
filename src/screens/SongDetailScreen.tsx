@@ -28,9 +28,11 @@ import { useDevScreenPerformance } from '../utils/devPerformance';
 import { transposeContent } from '../lib/chords';
 import type { ManualRoute } from '../navigation/manualTypes';
 import { db } from '../services/storage';
+import { resolveSongRecordingPlaybackSource } from '../services/songRecordingFiles';
 import type { PerformanceNoteBoxSize, PerformanceNoteColor, PerformanceNotePosition, Song } from '../types/models';
 import { detectTomFromContent, formatKeyForSpellingMode, getKeyOptionsForSpellingMode, getTransposeBetweenKeys, normalizeMusicKey, type MusicKey } from '../utils/chordKeys';
 import { getSongGenreDisplay, matchesGenreFilter } from '../utils/genres';
+import { hasSongAudioNote } from '../utils/songAudio';
 
 const DEFAULT_METRONOME_BPM = 120;
 const PERFORMANCE_NOTE_INITIAL_POSITION = { x: 18, y: 124 };
@@ -289,6 +291,8 @@ export function SongDetailScreen({
   const metronomeBeatRef = useRef(0);
   const audioContextRef = useRef<AudioContext | null>(null);
   const audioNoteRef = useRef<HTMLAudioElement | null>(null);
+  const audioNoteSourceCleanupRef = useRef<(() => void) | null>(null);
+  const audioNotePrepareIdRef = useRef(0);
   const [audioNotePlaying, setAudioNotePlaying] = useState(false);
   const [audioNotePlayerVisible, setAudioNotePlayerVisible] = useState(false);
   const [audioNoteCurrentTime, setAudioNoteCurrentTime] = useState(0);
@@ -833,22 +837,53 @@ export function SongDetailScreen({
   }, [metronomeSoundOn, song, unlockMetronomeAudio]);
 
   const stopAudioNote = useCallback(() => {
+    audioNotePrepareIdRef.current += 1;
     if (audioNoteRef.current) {
       audioNoteRef.current.pause();
       audioNoteRef.current.currentTime = 0;
       audioNoteRef.current.src = '';
       audioNoteRef.current = null;
     }
+    audioNoteSourceCleanupRef.current?.();
+    audioNoteSourceCleanupRef.current = null;
     setAudioNotePlaying(false);
     setAudioNotePlayerVisible(false);
     setAudioNoteCurrentTime(0);
     setAudioNoteDuration(0);
   }, []);
 
-  const prepareAudioNote = useCallback(() => {
-    if (!song?.audioNoteBase64 || !song.audioNoteMimeType) return;
+  const prepareAudioNote = useCallback(async () => {
+    if (!song || !hasSongAudioNote(song) || !song.audioNoteMimeType) return;
     if (audioNoteRef.current) return audioNoteRef.current;
-    const audio = new Audio(getAudioNoteDataUrl(song.audioNoteBase64, song.audioNoteMimeType));
+    const prepareId = ++audioNotePrepareIdRef.current;
+    let sourceUrl = '';
+    let sourceCleanup: (() => void) | null = null;
+
+    if (song.audioNoteFile?.trim()) {
+      try {
+        const source = await resolveSongRecordingPlaybackSource(song.audioNoteFile, song.audioNoteMimeType);
+        sourceUrl = source.url;
+        sourceCleanup = source.cleanup;
+      } catch {
+        sourceUrl = getAudioNoteDataUrl(song.audioNoteBase64, song.audioNoteMimeType);
+      }
+    } else {
+      sourceUrl = getAudioNoteDataUrl(song.audioNoteBase64, song.audioNoteMimeType);
+    }
+
+    if (prepareId !== audioNotePrepareIdRef.current) {
+      sourceCleanup?.();
+      return;
+    }
+    if (!sourceUrl) {
+      if (typeof window !== 'undefined') {
+        window.alert('Nao foi possivel localizar a gravacao desta musica.');
+      }
+      return;
+    }
+
+    const audio = new Audio(sourceUrl);
+    audioNoteSourceCleanupRef.current = sourceCleanup;
     audio.preload = 'metadata';
     audio.onloadedmetadata = () => {
       setAudioNoteDuration(Number.isFinite(audio.duration) ? audio.duration : 0);
@@ -864,10 +899,10 @@ export function SongDetailScreen({
     };
     audioNoteRef.current = audio;
     return audio;
-  }, [song?.audioNoteBase64, song?.audioNoteMimeType]);
+  }, [song]);
 
-  const toggleAudioNote = useCallback(() => {
-    const audio = prepareAudioNote();
+  const toggleAudioNote = useCallback(async () => {
+    const audio = await prepareAudioNote();
     if (!audio) return;
     setAudioNotePlayerVisible(true);
     if (audioNotePlaying) {
@@ -879,11 +914,15 @@ export function SongDetailScreen({
       audio.currentTime = 0;
       setAudioNoteCurrentTime(0);
     }
-    audio.play()
-      .then(() => setAudioNotePlaying(true))
-      .catch(() => {
-        setAudioNotePlaying(false);
-      });
+    try {
+      await audio.play();
+      setAudioNotePlaying(true);
+    } catch {
+      setAudioNotePlaying(false);
+      if (typeof window !== 'undefined') {
+        window.alert('Nao foi possivel reproduzir a gravacao desta musica.');
+      }
+    }
   }, [audioNotePlaying, prepareAudioNote]);
 
   const closeAudioNotePlayer = useCallback(() => {
@@ -1206,7 +1245,7 @@ export function SongDetailScreen({
   const noteOverlayBottom = isPlaying
     ? showPlaylistControls ? NOTE_OVERLAY_PLAYLIST_BOTTOM : NOTE_OVERLAY_BOTTOM
     : controlsVisible ? NOTE_OVERLAY_CONTROLS_BOTTOM : NOTE_OVERLAY_BOTTOM;
-  const hasAudioNote = !!song.audioNoteBase64 && !!song.audioNoteMimeType;
+  const hasAudioNote = hasSongAudioNote(song);
   const hasPerformanceNoteDraft = noteDraft.trim().length > 0 || !!song.performanceNote?.trim();
   const songGenreDisplay = getSongGenreDisplay(song);
   const audioNoteSafeDuration = audioNoteDuration > 0 ? audioNoteDuration : 0;

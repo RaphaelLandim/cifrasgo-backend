@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { FlatList, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native-web';
-import { ChevronRight, Music, Search } from 'lucide-react';
+import { ChevronRight, Mic2, Music, Play, Search } from 'lucide-react';
 import { useGenreFilter } from '../contexts/GenreFilterContext';
 import { useManualNavigation } from '../contexts/ManualNavigationContext';
 import { useTopBarControls } from '../contexts/TopBarContext';
@@ -11,6 +11,7 @@ import { db } from '../services/storage';
 import type { Song } from '../types/models';
 import { getSongGenreDisplay, matchesGenreFilter } from '../utils/genres';
 import { useDevScreenPerformance } from '../utils/devPerformance';
+import { hasSongAudioNote } from '../utils/songAudio';
 
 interface SongsScreenProps {
   styles: any;
@@ -89,6 +90,26 @@ export function SongsScreen({
     setQ(value);
   }, [sessionState]);
 
+  const renderSongIndicators = (song: Song) => {
+    const hasYoutube = !!song.youtubeUrl?.trim();
+    const hasAudioRecording = hasSongAudioNote(song);
+    if (!hasYoutube && !hasAudioRecording) return null;
+    return (
+      <View style={localStyles.indicatorRow}>
+        {hasYoutube ? (
+          <View accessibilityLabel="Possui video do YouTube">
+            <Play size={13} color="#f87171" fill="#f87171" />
+          </View>
+        ) : null}
+        {hasAudioRecording ? (
+          <View accessibilityLabel="Possui gravacao de audio">
+            <Mic2 size={13} color="#38bdf8" />
+          </View>
+        ) : null}
+      </View>
+    );
+  };
+
   return (
     <View style={{ flex: 1 }}>
       {searchOn ? (
@@ -138,6 +159,7 @@ export function SongsScreen({
               </View>
             
             </TouchableOpacity>
+            {renderSongIndicators(item)}
             <TouchableOpacity style={styles.listActionBtn} onPress={() => setSelectedActionSong(item)}>
               <ChevronRight size={18} color="#4FC3F7" />
             </TouchableOpacity>
@@ -167,6 +189,12 @@ const localStyles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(56, 189, 248, 0.22)',
     boxShadow: '0 10px 20px rgba(14, 165, 233, 0.10)',
+    flexShrink: 0,
+  },
+  indicatorRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
     flexShrink: 0,
   },
 });

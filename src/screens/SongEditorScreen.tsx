@@ -17,9 +17,16 @@ import { useManualNavigation } from '../contexts/ManualNavigationContext';
 import { useSettings } from '../contexts/SettingsContext';
 import { useSongEditorHeaderControls } from '../contexts/TopBarContext';
 import type { ManualRoute } from '../navigation/manualTypes';
+import {
+  deleteSongRecordingFile,
+  isSongRecordingFilesystemAvailable,
+  resolveSongRecordingPlaybackSource,
+  saveSongRecordingFile,
+} from '../services/songRecordingFiles';
 import { db } from '../services/storage';
-import type { Genre, SongCompasso } from '../types/models';
+import type { Genre, Song, SongCompasso } from '../types/models';
 import { getGenreDisplayName, getSongGenreKeys } from '../utils/genres';
+import { hasSongAudioNote } from '../utils/songAudio';
 
 interface SongEditorScreenProps {
   id: string;
@@ -58,23 +65,6 @@ const getSupportedAudioMimeType = () => {
   if (MediaRecorder.isTypeSupported('audio/webm')) return 'audio/webm';
   return undefined;
 };
-
-const blobToBase64Payload = (blob: Blob): Promise<{ base64: string; mimeType: string }> =>
-  new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      const result = typeof reader.result === 'string' ? reader.result : '';
-      const [header, base64 = ''] = result.split(',');
-      const mimeType = header.match(/^data:(.*);base64$/)?.[1] || blob.type || 'audio/webm';
-      if (!base64) {
-        reject(new Error('Audio vazio.'));
-        return;
-      }
-      resolve({ base64, mimeType });
-    };
-    reader.onerror = () => reject(new Error('Nao foi possivel processar o audio.'));
-    reader.readAsDataURL(blob);
-  });
 
 export function SongEditorScreen({
   id,
@@ -117,9 +107,11 @@ export function SongEditorScreen({
   const [audioRecorderStatus, setAudioRecorderStatus] = useState<AudioRecorderStatus>('idle');
   const [audioRecorderError, setAudioRecorderError] = useState('');
   const [audioRecorderNotice, setAudioRecorderNotice] = useState('');
+  const [audioNoteFile, setAudioNoteFile] = useState<string | undefined>();
   const [audioNoteBase64, setAudioNoteBase64] = useState<string | undefined>();
   const [audioNoteMimeType, setAudioNoteMimeType] = useState<string | undefined>();
   const [audioNoteUpdatedAt, setAudioNoteUpdatedAt] = useState<number | undefined>();
+  const [pendingAudioBlob, setPendingAudioBlob] = useState<Blob | null>(null);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const mediaRecorderRef = React.useRef<MediaRecorder | null>(null);
   const mediaStreamRef = React.useRef<MediaStream | null>(null);
@@ -127,6 +119,7 @@ export function SongEditorScreen({
   const recordLimitTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const recordTimerRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
   const previewAudioRef = React.useRef<HTMLAudioElement | null>(null);
+  const previewAudioSourceCleanupRef = React.useRef<(() => void) | null>(null);
   const metronomePreviewIntervalRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
   const metronomePreviewPulseTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const metronomePreviewAudioContextRef = React.useRef<AudioContext | null>(null);
@@ -152,10 +145,11 @@ export function SongEditorScreen({
           setCompasso(song.compasso ?? '4/4');
           setBeepVisualEnabled(song.beepVisualEnabled === true);
           setBeepSoundEnabled(song.beepSoundEnabled === true);
+          setAudioNoteFile(song.audioNoteFile);
           setAudioNoteBase64(song.audioNoteBase64);
           setAudioNoteMimeType(song.audioNoteMimeType);
           setAudioNoteUpdatedAt(song.audioNoteUpdatedAt);
-          setAudioRecorderStatus(song.audioNoteBase64 && song.audioNoteMimeType ? 'recorded' : 'idle');
+          setAudioRecorderStatus(hasSongAudioNote(song) ? 'recorded' : 'idle');
         }
       });
     }
@@ -240,10 +234,14 @@ export function SongEditorScreen({
   }, [beepSoundEnabled, beepVisualEnabled, compasso, parseBpm, playMetronomePreviewBeep, stopMetronomePreview]);
 
   const stopAudioPreview = React.useCallback(() => {
-    if (!previewAudioRef.current) return;
-    previewAudioRef.current.pause();
-    previewAudioRef.current.currentTime = 0;
-    previewAudioRef.current = null;
+    if (previewAudioRef.current) {
+      previewAudioRef.current.pause();
+      previewAudioRef.current.currentTime = 0;
+      previewAudioRef.current.src = '';
+      previewAudioRef.current = null;
+    }
+    previewAudioSourceCleanupRef.current?.();
+    previewAudioSourceCleanupRef.current = null;
   }, []);
 
   const stopRecordingTimers = React.useCallback(() => {
@@ -321,18 +319,17 @@ export function SongEditorScreen({
           setAudioRecorderError('Nenhum audio foi capturado.');
           return;
         }
-        try {
-          const blob = new Blob(chunks, { type: recorder.mimeType || mimeType || 'audio/webm' });
-          const payload = await blobToBase64Payload(blob);
-          setAudioNoteBase64(payload.base64);
-          setAudioNoteMimeType(payload.mimeType);
-          setAudioNoteUpdatedAt(Date.now());
-          setAudioRecorderStatus('recorded');
-          setAudioRecorderNotice('Gravacao pronta para salvar.');
-        } catch {
+        const blob = new Blob(chunks, { type: recorder.mimeType || mimeType || 'audio/webm' });
+        if (!blob.size) {
           setAudioRecorderStatus('error');
           setAudioRecorderError('Nao foi possivel preparar a gravacao.');
+          return;
         }
+        setPendingAudioBlob(blob);
+        setAudioNoteMimeType(blob.type || recorder.mimeType || mimeType || 'audio/webm');
+        setAudioNoteUpdatedAt(Date.now());
+        setAudioRecorderStatus('recorded');
+        setAudioRecorderNotice('Gravacao pronta para salvar.');
       };
 
       recorder.start();
@@ -362,14 +359,34 @@ export function SongEditorScreen({
     }
   }, []);
 
-  const playAudioPreview = React.useCallback(() => {
-    const dataUrl = getAudioNoteDataUrl(audioNoteBase64, audioNoteMimeType);
-    if (!dataUrl) {
+  const playAudioPreview = React.useCallback(async () => {
+    if (!audioNoteMimeType) {
       setAudioRecorderError('Nenhuma gravacao disponivel para ouvir.');
       return;
     }
     stopAudioPreview();
-    const audio = new Audio(dataUrl);
+    let sourceUrl = '';
+    if (pendingAudioBlob) {
+      sourceUrl = URL.createObjectURL(pendingAudioBlob);
+      previewAudioSourceCleanupRef.current = () => URL.revokeObjectURL(sourceUrl);
+    } else {
+      sourceUrl = getAudioNoteDataUrl(audioNoteBase64, audioNoteMimeType);
+    }
+    if (!sourceUrl && audioNoteFile?.trim()) {
+      try {
+        const source = await resolveSongRecordingPlaybackSource(audioNoteFile, audioNoteMimeType);
+        sourceUrl = source.url;
+        previewAudioSourceCleanupRef.current = source.cleanup;
+      } catch {
+        setAudioRecorderError('Nao foi possivel localizar a gravacao salva.');
+        return;
+      }
+    }
+    if (!sourceUrl) {
+      setAudioRecorderError('Nenhuma gravacao disponivel para ouvir.');
+      return;
+    }
+    const audio = new Audio(sourceUrl);
     previewAudioRef.current = audio;
     audio.onended = () => {
       previewAudioRef.current = null;
@@ -377,45 +394,101 @@ export function SongEditorScreen({
     audio.play().catch(() => {
       setAudioRecorderError('Nao foi possivel reproduzir a gravacao.');
     });
-  }, [audioNoteBase64, audioNoteMimeType, stopAudioPreview]);
+  }, [audioNoteBase64, audioNoteFile, audioNoteMimeType, pendingAudioBlob, stopAudioPreview]);
+
+  const commitPendingAudioToSong = React.useCallback(async (
+    songId: string,
+    songUpdates: Partial<Song> = {},
+  ): Promise<string> => {
+    if (!pendingAudioBlob || !audioNoteMimeType) {
+      throw new Error('Grave um trecho antes de salvar.');
+    }
+    if (!isSongRecordingFilesystemAvailable()) {
+      throw new Error('O armazenamento de gravacoes nao esta disponivel neste aparelho.');
+    }
+
+    const previousFile = audioNoteFile;
+    let nextFile = '';
+    try {
+      nextFile = await saveSongRecordingFile(pendingAudioBlob, audioNoteMimeType);
+      const updated = await db.updateSong(songId, {
+        ...songUpdates,
+        audioNoteFile: nextFile,
+        audioNoteBase64: undefined,
+        audioNoteMimeType,
+        audioNoteUpdatedAt: audioNoteUpdatedAt || Date.now(),
+      });
+      if (!updated) throw new Error('A musica nao foi encontrada para salvar a gravacao.');
+    } catch (error) {
+      if (nextFile) await deleteSongRecordingFile(nextFile);
+      throw error;
+    }
+
+    setAudioNoteFile(nextFile);
+    setAudioNoteBase64(undefined);
+    setPendingAudioBlob(null);
+    if (previousFile && previousFile !== nextFile) {
+      const deleted = await deleteSongRecordingFile(previousFile);
+      if (!deleted) console.warn('[CifrasGo] Nao foi possivel remover o arquivo antigo da gravacao.');
+    }
+    return nextFile;
+  }, [audioNoteFile, audioNoteMimeType, audioNoteUpdatedAt, pendingAudioBlob]);
 
   const saveAudioNote = React.useCallback(async () => {
-    if (!audioNoteBase64 || !audioNoteMimeType) {
+    if (!pendingAudioBlob || !audioNoteMimeType) {
       setAudioRecorderError('Grave um trecho antes de salvar.');
       return;
     }
-    const nextUpdatedAt = audioNoteUpdatedAt || Date.now();
     setAudioRecorderStatus('saving');
-    if (!isNew) {
-      await db.updateSong(id, {
-        audioNoteBase64,
-        audioNoteMimeType,
-        audioNoteUpdatedAt: nextUpdatedAt,
-      });
+    setAudioRecorderError('');
+    if (isNew) {
+      setAudioRecorderStatus('recorded');
+      setAudioRecorderNotice('Gravacao pronta. Salve a musica para guardar.');
+      return;
     }
-    setAudioNoteUpdatedAt(nextUpdatedAt);
-    setAudioRecorderStatus('recorded');
-    setAudioRecorderNotice(isNew ? 'Gravacao pronta. Salve a musica para guardar.' : 'Gravacao salva.');
-  }, [audioNoteBase64, audioNoteMimeType, audioNoteUpdatedAt, id, isNew]);
+    try {
+      await commitPendingAudioToSong(id);
+      setAudioRecorderStatus('recorded');
+      setAudioRecorderNotice('Gravacao salva.');
+    } catch (error) {
+      setAudioRecorderStatus('error');
+      setAudioRecorderError(error instanceof Error ? error.message : 'Nao foi possivel salvar a gravacao.');
+    }
+  }, [audioNoteMimeType, commitPendingAudioToSong, id, isNew, pendingAudioBlob]);
 
   const deleteAudioNote = React.useCallback(async () => {
+    const previousAudioNoteFile = audioNoteFile;
     cleanupRecorder();
     stopAudioPreview();
+    setAudioRecorderError('');
+    if (!isNew) {
+      try {
+        const updated = await db.updateSong(id, {
+          audioNoteFile: undefined,
+          audioNoteBase64: undefined,
+          audioNoteMimeType: undefined,
+          audioNoteUpdatedAt: undefined,
+        });
+        if (!updated) throw new Error('A musica nao foi encontrada.');
+      } catch (error) {
+        setAudioRecorderStatus('error');
+        setAudioRecorderError(error instanceof Error ? error.message : 'Nao foi possivel apagar a gravacao.');
+        return;
+      }
+    }
+    setAudioNoteFile(undefined);
     setAudioNoteBase64(undefined);
     setAudioNoteMimeType(undefined);
     setAudioNoteUpdatedAt(undefined);
+    setPendingAudioBlob(null);
     setRecordingSeconds(0);
     setAudioRecorderStatus('idle');
     setAudioRecorderNotice(isNew ? 'Gravacao removida.' : 'Gravacao apagada.');
-    setAudioRecorderError('');
-    if (!isNew) {
-      await db.updateSong(id, {
-        audioNoteBase64: undefined,
-        audioNoteMimeType: undefined,
-        audioNoteUpdatedAt: undefined,
-      });
+    if (previousAudioNoteFile) {
+      const deleted = await deleteSongRecordingFile(previousAudioNoteFile);
+      if (!deleted) console.warn('[CifrasGo] Nao foi possivel remover o arquivo apagado da gravacao.');
     }
-  }, [cleanupRecorder, id, isNew, stopAudioPreview]);
+  }, [audioNoteFile, cleanupRecorder, id, isNew, stopAudioPreview]);
 
   const save = React.useCallback(async () => {
     if (!title.trim()) return Alert.alert('Informe o título');
@@ -427,29 +500,7 @@ export function SongEditorScreen({
     const genreDisplay = nextGenreKeys.map((genre) => getGenreDisplayName(genre, registeredGenres)).join(', ');
     const nextBpm = parseBpm();
     setBpm(String(nextBpm));
-    if (isNew) {
-      const created = await db.addSong({
-        title,
-        artist,
-        genre: genreDisplay || undefined,
-        genres: nextGenreKeys.length ? nextGenreKeys : undefined,
-        observation,
-        content,
-        sourceUrl,
-        youtubeUrl: nextYoutubeUrl || undefined,
-        bpm: nextBpm,
-        compasso,
-        beepVisualEnabled,
-        beepSoundEnabled,
-        audioNoteBase64,
-        audioNoteMimeType,
-        audioNoteUpdatedAt,
-        updatedAt: Date.now(),
-      });
-      nav.navigate('SongDetail', { id: created.id, returnTo });
-      return;
-    }
-    await db.updateSong(id, {
+    const songUpdates: Partial<Song> = {
       title,
       artist,
       genre: genreDisplay || undefined,
@@ -462,13 +513,63 @@ export function SongEditorScreen({
       compasso,
       beepVisualEnabled,
       beepSoundEnabled,
-      audioNoteBase64,
-      audioNoteMimeType,
-      audioNoteUpdatedAt,
       updatedAt: Date.now(),
-    });
-    nav.navigate('SongDetail', { id, returnTo });
-  }, [artist, audioNoteBase64, audioNoteMimeType, audioNoteUpdatedAt, beepSoundEnabled, beepVisualEnabled, compasso, content, id, isNew, nav, observation, parseBpm, registeredGenres, returnTo, selectedGenreKeys, sourceUrl, title, youtubeUrl]);
+    };
+    if (isNew) {
+      let stagedFile = '';
+      let createdSongId = '';
+      try {
+        if (pendingAudioBlob) {
+          if (!audioNoteMimeType || !isSongRecordingFilesystemAvailable()) {
+            throw new Error('O armazenamento de gravacoes nao esta disponivel neste aparelho.');
+          }
+          stagedFile = await saveSongRecordingFile(pendingAudioBlob, audioNoteMimeType);
+        }
+        const created = await db.addSong(songUpdates as Parameters<typeof db.addSong>[0]);
+        createdSongId = created.id;
+        if (stagedFile) {
+          const updated = await db.updateSong(created.id, {
+            audioNoteFile: stagedFile,
+            audioNoteBase64: undefined,
+            audioNoteMimeType,
+            audioNoteUpdatedAt: audioNoteUpdatedAt || Date.now(),
+          });
+          if (!updated) throw new Error('Nao foi possivel vincular a gravacao a nova musica.');
+          setAudioNoteFile(stagedFile);
+          setAudioNoteBase64(undefined);
+          setPendingAudioBlob(null);
+        }
+        nav.navigate('SongDetail', { id: created.id, returnTo });
+      } catch (error) {
+        if (stagedFile) await deleteSongRecordingFile(stagedFile);
+        if (createdSongId) await db.deleteSong(createdSongId).catch(() => undefined);
+        setAudioRecorderStatus('error');
+        const message = error instanceof Error ? error.message : 'Nao foi possivel salvar a musica e sua gravacao.';
+        setAudioRecorderError(message);
+        Alert.alert('Erro ao salvar', message);
+      }
+      return;
+    }
+    try {
+      if (pendingAudioBlob) {
+        await commitPendingAudioToSong(id, songUpdates);
+      } else {
+        await db.updateSong(id, {
+          ...songUpdates,
+          audioNoteFile,
+          audioNoteBase64,
+          audioNoteMimeType,
+          audioNoteUpdatedAt,
+        });
+      }
+      nav.navigate('SongDetail', { id, returnTo });
+    } catch (error) {
+      setAudioRecorderStatus('error');
+      const message = error instanceof Error ? error.message : 'Nao foi possivel salvar a musica e sua gravacao.';
+      setAudioRecorderError(message);
+      Alert.alert('Erro ao salvar', message);
+    }
+  }, [artist, audioNoteBase64, audioNoteFile, audioNoteMimeType, audioNoteUpdatedAt, beepSoundEnabled, beepVisualEnabled, commitPendingAudioToSong, compasso, content, id, isNew, nav, observation, parseBpm, pendingAudioBlob, registeredGenres, returnTo, selectedGenreKeys, sourceUrl, title, youtubeUrl]);
 
   const cancel = React.useCallback(() => {
     if (isNew) {
@@ -629,6 +730,8 @@ export function SongEditorScreen({
       ? `Editando no tom transposto: ${editingTransposedFromKey} -> ${editingTransposedToKey}`
       : '';
 
+  const hasAudioNote = !!pendingAudioBlob || hasSongAudioNote({ audioNoteFile, audioNoteBase64, audioNoteMimeType });
+
   return (
     <View style={styles.container}>
       <Text style={styles.screenTitle}>{isNew ? 'Nova música' : 'Editar música'}</Text>
@@ -649,7 +752,7 @@ export function SongEditorScreen({
             style={[
               metronomeEditorStyles.metronomeButton,
               audioRecorderStyles.recButton,
-              audioNoteBase64 && audioNoteMimeType ? audioRecorderStyles.recButtonHasAudio : null,
+              hasAudioNote ? audioRecorderStyles.recButtonHasAudio : null,
             ]}
             onPress={() => {
               setAudioRecorderError('');
@@ -792,13 +895,13 @@ export function SongEditorScreen({
               style={[
                 audioRecorderStyles.statusDot,
                 audioRecorderStatus === 'recording' ? audioRecorderStyles.statusDotRecording : null,
-                audioNoteBase64 && audioNoteMimeType ? audioRecorderStyles.statusDotReady : null,
+                hasAudioNote ? audioRecorderStyles.statusDotReady : null,
               ]}
             />
             <Text style={audioRecorderStyles.statusText}>
               {audioRecorderStatus === 'recording'
                 ? `Gravando ${recordingSeconds}s / ${AUDIO_NOTE_MAX_SECONDS}s`
-                : audioNoteBase64 && audioNoteMimeType
+                : hasAudioNote
                   ? 'Gravação disponível'
                   : 'Nenhuma gravação salva'}
             </Text>
@@ -817,14 +920,14 @@ export function SongEditorScreen({
               <TouchableOpacity style={[audioRecorderStyles.actionButton, audioRecorderStyles.recordButton]} onPress={startAudioRecording}>
                 <Mic size={17} color="#fff" />
                 <Text style={audioRecorderStyles.actionTextLight}>
-                  {audioNoteBase64 && audioNoteMimeType ? 'Substituir' : 'Iniciar gravação'}
+                  {hasAudioNote ? 'Substituir' : 'Iniciar gravação'}
                 </Text>
               </TouchableOpacity>
             )}
 
             <TouchableOpacity
-              style={[audioRecorderStyles.actionButton, !audioNoteBase64 || !audioNoteMimeType ? audioRecorderStyles.disabledButton : null]}
-              disabled={!audioNoteBase64 || !audioNoteMimeType || audioRecorderStatus === 'recording'}
+              style={[audioRecorderStyles.actionButton, !hasAudioNote ? audioRecorderStyles.disabledButton : null]}
+              disabled={!hasAudioNote || audioRecorderStatus === 'recording'}
               onPress={playAudioPreview}
             >
               <Play size={17} color="var(--app-accent)" />
@@ -837,11 +940,11 @@ export function SongEditorScreen({
               style={[
                 audioRecorderStyles.actionButton,
                 audioRecorderStyles.deleteButton,
-                !audioNoteBase64 || !audioNoteMimeType
+                !hasAudioNote
                   ? audioRecorderStyles.disabledButton
                   : null,
               ]}
-              disabled={!audioNoteBase64 || !audioNoteMimeType || audioRecorderStatus === 'recording'}
+              disabled={!hasAudioNote || audioRecorderStatus === 'recording'}
               onPress={deleteAudioNote}
             >
               <Trash2 size={15} color="#ff7a7a" />
@@ -850,8 +953,8 @@ export function SongEditorScreen({
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={[styles.modalPrimaryBtn, !audioNoteBase64 || !audioNoteMimeType ? audioRecorderStyles.disabledButton : null]}
-              disabled={!audioNoteBase64 || !audioNoteMimeType || audioRecorderStatus === 'recording' || audioRecorderStatus === 'saving'}
+              style={[styles.modalPrimaryBtn, !pendingAudioBlob || !audioNoteMimeType ? audioRecorderStyles.disabledButton : null]}
+              disabled={!pendingAudioBlob || !audioNoteMimeType || audioRecorderStatus === 'recording' || audioRecorderStatus === 'saving'}
               onPress={saveAudioNote}
             >
               <Text style={styles.modalPrimaryText}>

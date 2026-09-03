@@ -1,6 +1,6 @@
 ﻿import React, { useEffect, useState } from 'react';
 import { FlatList, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native-web';
-import { ArrowDown, ArrowUp, ChevronRight, Copy, FileText, GripHorizontal, ListMusic, Music, Music2, Pencil, Plus, Search, Share2, Star, StarOff, Trash2 } from 'lucide-react';
+import { ArrowDown, ArrowUp, ChevronRight, Copy, FileText, GripHorizontal, ListMusic, Mic2, Music, Music2, Pencil, Play, Plus, Search, Share2, Star, StarOff, Trash2 } from 'lucide-react';
 import { AppModal } from '../components/AppModal';
 import { useConfirmDestructiveAction } from '../components/ConfirmDialog';
 import { PlaylistPickerModal } from '../components/modals/PlaylistPickerModal';
@@ -29,6 +29,7 @@ import {
 import { getQuickPdfSourceLabel, hasQuickPdfSource } from '../utils/quickPdfs';
 import { sortStarredItems, toggleStarredPlaylist } from '../utils/starredItems';
 import { useDevScreenPerformance } from '../utils/devPerformance';
+import { hasSongAudioNote } from '../utils/songAudio';
 
 interface PlaylistDetailScreenProps {
   playlistId: string;
@@ -903,6 +904,25 @@ export function PlaylistDetailScreen({
     setDraggedSongId(null);
     load();
   };
+  const renderSongIndicators = (song: Song) => {
+    const hasYoutube = !!song.youtubeUrl?.trim();
+    const hasAudioRecording = hasSongAudioNote(song);
+    if (!hasYoutube && !hasAudioRecording) return null;
+    return (
+      <View style={localStyles.songIndicatorRow}>
+        {hasYoutube ? (
+          <View accessibilityLabel="Possui video do YouTube">
+            <Play size={13} color="#f87171" fill="#f87171" />
+          </View>
+        ) : null}
+        {hasAudioRecording ? (
+          <View accessibilityLabel="Possui gravacao de audio">
+            <Mic2 size={13} color="#38bdf8" />
+          </View>
+        ) : null}
+      </View>
+    );
+  };
   const renderPlaylistDisplayRow = (row: PlaylistDisplayRow, keyPrefix = '') => {
     const rowKey = keyPrefix ? `${keyPrefix}-${row.key}` : row.key;
     if (row.type === 'pdf') {
@@ -964,6 +984,7 @@ export function PlaylistDetailScreen({
             </View>
           </View>
         </TouchableOpacity>
+        {renderSongIndicators(row.song)}
         <TouchableOpacity style={styles.listActionBtn} onPress={() => setSelectedPlaylistSong(row.song)}>
           <ChevronRight size={18} color="#4FC3F7" />
         </TouchableOpacity>
@@ -1151,6 +1172,7 @@ export function PlaylistDetailScreen({
                     </View>
                   </View>
                 </TouchableOpacity>
+                {renderSongIndicators(item)}
                 <TouchableOpacity style={styles.listActionBtn} onPress={() => setSelectedPlaylistSong(item)}>
                   <ChevronRight size={18} color="#4FC3F7" />
                 </TouchableOpacity>
@@ -1843,6 +1865,12 @@ const localStyles = StyleSheet.create({
     alignItems: 'center',
     gap: 6,
     minWidth: 0,
+  },
+  songIndicatorRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    flexShrink: 0,
   },
   disabledAction: {
     opacity: 0.48,

@@ -679,6 +679,9 @@ Backup:
 - Textos livres antigos sem marcador claro nao sao importados como CifrasGo.
 - Na importacao de musica individual, a deduplicacao usa artista/titulo: se existir, atualiza a musica; se nao existir, cria uma nova.
 - O ZIP de lista individual continua separado e usa `cifrasgo-playlist.json`; ZIP sem manifest proprio continua seguindo o restore legado `.cfs`.
+- Gravacoes novas sao persistidas como arquivos relativos em `recordings/`; `audioNoteBase64` permanece somente para compatibilidade com dados legados.
+- O backup v2 inclui os arquivos em `recordings/`, e o restore legado converte Base64 importado antes de salvar as musicas.
+- A conversao de gravacoes antigas e a auditoria/limpeza de arquivos orfaos sao acoes manuais da `BackupScreen`; nao existe scanner, migracao ou limpeza automatica no boot.
 
 Pastas e listas:
 

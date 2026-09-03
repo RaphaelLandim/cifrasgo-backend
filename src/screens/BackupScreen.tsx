@@ -6,9 +6,11 @@ import {
   Database,
   FileText,
   Folder,
+  HardDrive,
   ListMusic,
   Music,
   Search,
+  ScanSearch,
   ShieldCheck,
   SlidersHorizontal,
   UploadCloud,
@@ -24,9 +26,22 @@ import {
 } from '../services/backup';
 import { buildPlaylistPdfExport, type PlaylistPdfExportMode } from '../services/playlistPdfExport';
 import { shareBlobFile } from '../services/share';
+import {
+  auditSongRecordings,
+  cleanupOrphanSongRecordings,
+  type SongRecordingAuditResult,
+  type SongRecordingCleanupResult,
+} from '../services/songRecordingMaintenance';
+import {
+  countLegacySongRecordings,
+  migrateLegacySongRecordings,
+  type SongRecordingMigrationProgress,
+  type SongRecordingMigrationResult,
+} from '../services/songRecordingMigration';
 import { db } from '../services/storage';
 import type { Folder as FolderModel, Playlist, PlaylistSection, Song } from '../types/models';
 import { getPlaylistItems } from '../utils/playlistItems';
+import { hasSongAudioNote } from '../utils/songAudio';
 
 interface BackupScreenProps {
   styles: any;
@@ -38,6 +53,10 @@ type BackupStats = {
   songs: number;
   playlists: number;
   folders: number;
+  audioRecordings: number;
+  audioBase64Chars: number;
+  audioFileRecordings: number;
+  legacyAudioRecordings: number;
 };
 
 const customTabs: Array<{ id: CustomBackupTab; label: string }> = [
@@ -94,7 +113,15 @@ const formatCustomBackupFileName = () => {
 export function BackupScreen({ styles }: BackupScreenProps) {
   const { themeSettings } = useSettings();
   const isLightTheme = themeSettings.mode === 'light';
-  const [backupStats, setBackupStats] = useState<BackupStats>({ songs: 0, playlists: 0, folders: 0 });
+  const [backupStats, setBackupStats] = useState<BackupStats>({
+    songs: 0,
+    playlists: 0,
+    folders: 0,
+    audioRecordings: 0,
+    audioBase64Chars: 0,
+    audioFileRecordings: 0,
+    legacyAudioRecordings: 0,
+  });
   const [restoreLoading, setRestoreLoading] = useState(false);
   const [restoreMsg, setRestoreMsg] = useState<string | null>(null);
   const [restoreProgress, setRestoreProgress] = useState<{ done: number; total: number } | null>(null);
@@ -102,6 +129,18 @@ export function BackupScreen({ styles }: BackupScreenProps) {
   const [customOpen, setCustomOpen] = useState(false);
   const [customLoading, setCustomLoading] = useState(false);
   const [customDataLoading, setCustomDataLoading] = useState(false);
+  const [includeFullBackupAudio, setIncludeFullBackupAudio] = useState(true);
+  const [includeCustomBackupAudio, setIncludeCustomBackupAudio] = useState(true);
+  const [migrationOpen, setMigrationOpen] = useState(false);
+  const [migrationLoading, setMigrationLoading] = useState(false);
+  const [migrationProgress, setMigrationProgress] = useState<SongRecordingMigrationProgress | null>(null);
+  const [migrationResult, setMigrationResult] = useState<SongRecordingMigrationResult | null>(null);
+  const [maintenanceOpen, setMaintenanceOpen] = useState(false);
+  const [maintenanceLoading, setMaintenanceLoading] = useState(false);
+  const [recordingAudit, setRecordingAudit] = useState<SongRecordingAuditResult | null>(null);
+  const [cleanupConfirmOpen, setCleanupConfirmOpen] = useState(false);
+  const [cleanupResult, setCleanupResult] = useState<SongRecordingCleanupResult | null>(null);
+  const [maintenanceError, setMaintenanceError] = useState<string | null>(null);
   const [pdfExportOpen, setPdfExportOpen] = useState(false);
   const [pdfExportLoading, setPdfExportLoading] = useState(false);
   const [pdfExportDataLoading, setPdfExportDataLoading] = useState(false);
@@ -128,7 +167,7 @@ export function BackupScreen({ styles }: BackupScreenProps) {
   const [selectedPlaylistIds, setSelectedPlaylistIds] = useState<string[]>([]);
   const [selectedFolderIds, setSelectedFolderIds] = useState<string[]>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const busy = restoreLoading || exportLoading || customLoading || pdfExportLoading;
+  const busy = restoreLoading || exportLoading || customLoading || pdfExportLoading || migrationLoading || maintenanceLoading;
   const hasCustomSelection =
     selectedSongIds.length > 0 ||
     selectedArtistNames.length > 0 ||
@@ -146,9 +185,26 @@ export function BackupScreen({ styles }: BackupScreenProps) {
           db.getFolders(),
         ]);
         if (!active) return;
-        setBackupStats({ songs: songs.length, playlists: playlists.length, folders: folders.length });
+        const songsWithAudio = songs.filter(hasSongAudioNote);
+        setBackupStats({
+          songs: songs.length,
+          playlists: playlists.length,
+          folders: folders.length,
+          audioRecordings: songsWithAudio.length,
+          audioBase64Chars: songsWithAudio.reduce((total, song) => total + (song.audioNoteBase64?.length || 0), 0),
+          audioFileRecordings: songsWithAudio.filter((song) => !!song.audioNoteFile?.trim()).length,
+          legacyAudioRecordings: countLegacySongRecordings(songs),
+        });
       } catch {
-        if (active) setBackupStats({ songs: 0, playlists: 0, folders: 0 });
+        if (active) setBackupStats({
+          songs: 0,
+          playlists: 0,
+          folders: 0,
+          audioRecordings: 0,
+          audioBase64Chars: 0,
+          audioFileRecordings: 0,
+          legacyAudioRecordings: 0,
+        });
       }
     };
 
@@ -364,12 +420,91 @@ export function BackupScreen({ styles }: BackupScreenProps) {
     setPdfExportOpen(true);
   };
 
+  const openRecordingMigrationModal = () => {
+    setMigrationProgress(null);
+    setMigrationResult(null);
+    setMigrationOpen(true);
+  };
+
+  const runRecordingMigration = async () => {
+    setMigrationLoading(true);
+    setMigrationProgress({ done: 0, total: backupStats.legacyAudioRecordings, title: '' });
+    setMigrationResult(null);
+    try {
+      const result = await migrateLegacySongRecordings({
+        onProgress: setMigrationProgress,
+      });
+      setMigrationResult(result);
+      try {
+        const songs = await db.getSongs();
+        const songsWithAudio = songs.filter(hasSongAudioNote);
+        setBackupStats((current) => ({
+          ...current,
+          songs: songs.length,
+          audioRecordings: songsWithAudio.length,
+          audioBase64Chars: songsWithAudio.reduce((total, song) => total + (song.audioNoteBase64?.length || 0), 0),
+          audioFileRecordings: songsWithAudio.filter((song) => !!song.audioNoteFile?.trim()).length,
+          legacyAudioRecordings: countLegacySongRecordings(songs),
+        }));
+      } catch {
+        // O resultado da migracao continua valido mesmo se a releitura visual falhar.
+      }
+    } catch (error: any) {
+      setMigrationResult({
+        total: backupStats.legacyAudioRecordings,
+        migrated: 0,
+        failures: [],
+        stoppedReason: error?.message || 'Nao foi possivel iniciar a conversao.',
+      });
+    } finally {
+      setMigrationLoading(false);
+    }
+  };
+
+  const runRecordingAudit = async () => {
+    setMaintenanceLoading(true);
+    setMaintenanceError(null);
+    setCleanupResult(null);
+    try {
+      setRecordingAudit(await auditSongRecordings());
+    } catch (error: any) {
+      setRecordingAudit(null);
+      setMaintenanceError(error?.message || 'Nao foi possivel verificar as gravacoes.');
+    } finally {
+      setMaintenanceLoading(false);
+    }
+  };
+
+  const openRecordingMaintenance = () => {
+    setMaintenanceOpen(true);
+    setCleanupConfirmOpen(false);
+    void runRecordingAudit();
+  };
+
+  const runOrphanCleanup = async () => {
+    if (!recordingAudit?.orphanFiles.length) return;
+    setMaintenanceLoading(true);
+    setMaintenanceError(null);
+    try {
+      const result = await cleanupOrphanSongRecordings(recordingAudit.orphanFiles);
+      setCleanupResult(result);
+      setCleanupConfirmOpen(false);
+      setRecordingAudit(await auditSongRecordings());
+    } catch (error: any) {
+      setMaintenanceError(error?.message || 'Nao foi possivel limpar os arquivos nao utilizados.');
+    } finally {
+      setMaintenanceLoading(false);
+    }
+  };
+
   const exportFullBackup = async () => {
     setRestoreMsg(null);
     setRestoreProgress(null);
     setExportLoading(true);
     try {
-      const blob = await buildCifrasGoFullBackupZip();
+      const blob = await buildCifrasGoFullBackupZip({
+        includeAudioRecordings: includeFullBackupAudio,
+      });
       const date = new Date().toISOString().slice(0, 10);
       const shared = await shareBlobFile({
         blob,
@@ -397,6 +532,8 @@ export function BackupScreen({ styles }: BackupScreenProps) {
         artistNames: selectedArtistNames,
         playlistIds: selectedPlaylistIds,
         folderIds: selectedFolderIds,
+      }, {
+        includeAudioRecordings: includeCustomBackupAudio,
       });
       const shared = await shareBlobFile({
         blob,
@@ -506,6 +643,27 @@ export function BackupScreen({ styles }: BackupScreenProps) {
       {selected ? <Check size={14} color="#000" /> : null}
     </View>
   );
+
+  const renderAudioRecordingOption = (selected: boolean, onPress: () => void) => {
+    const approximateMb = backupStats.audioBase64Chars / (1024 * 1024);
+    const audioSummary = backupStats.audioRecordings
+      ? backupStats.audioFileRecordings > 0
+        ? `${backupStats.audioRecordings} gravacao${backupStats.audioRecordings === 1 ? '' : 'oes'} - tamanho calculado ao gerar`
+        : `${backupStats.audioRecordings} gravacao${backupStats.audioRecordings === 1 ? '' : 'oes'} - aproximadamente ${approximateMb.toFixed(1).replace('.', ',')} MB`
+      : 'Nenhuma gravacao encontrada';
+    return (
+      <TouchableOpacity style={localStyles.audioOption} onPress={onPress} activeOpacity={0.82}>
+        {renderCheck(selected)}
+        <View style={localStyles.audioOptionText}>
+          <Text style={localStyles.audioOptionTitle}>Incluir gravacoes de audio</Text>
+          <Text style={localStyles.audioOptionSubtitle}>
+            Inclui as gravacoes feitas nas musicas. O arquivo sera maior.
+          </Text>
+          <Text style={localStyles.audioOptionMeta}>{audioSummary}</Text>
+        </View>
+      </TouchableOpacity>
+    );
+  };
 
   const renderEmptyState = (icon: ReactNode, title: string, subtitle: string) => (
     <View style={localStyles.emptyState}>
@@ -700,6 +858,10 @@ export function BackupScreen({ styles }: BackupScreenProps) {
                   </Text>
                 </View>
               </View>
+              {renderAudioRecordingOption(
+                includeFullBackupAudio,
+                () => setIncludeFullBackupAudio((current) => !current)
+              )}
               <TouchableOpacity
                 style={[localStyles.featuredButton, busy && localStyles.actionDisabled]}
                 onPress={() => void exportFullBackup()}
@@ -759,6 +921,46 @@ export function BackupScreen({ styles }: BackupScreenProps) {
               </TouchableOpacity>
             </View>
 
+            {backupStats.legacyAudioRecordings > 0 ? (
+              <View style={[localStyles.restoreCard, isLightTheme && localStyles.restoreCardLight]}>
+                <View style={localStyles.restoreIcon}>
+                  <HardDrive size={24} color="#f59e0b" />
+                </View>
+                <View style={localStyles.restoreTextBlock}>
+                  <Text style={localStyles.actionTitle}>Converter gravacoes antigas</Text>
+                  <Text style={localStyles.actionSubtitle}>
+                    {backupStats.legacyAudioRecordings} gravacao{backupStats.legacyAudioRecordings === 1 ? '' : 'oes'} antiga{backupStats.legacyAudioRecordings === 1 ? '' : 's'} para converter.
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  style={[localStyles.restoreButton, busy && localStyles.actionDisabled]}
+                  onPress={openRecordingMigrationModal}
+                  disabled={busy}
+                >
+                  <Text style={localStyles.restoreButtonText}>Revisar conversao</Text>
+                </TouchableOpacity>
+              </View>
+            ) : null}
+
+            <View style={[localStyles.restoreCard, isLightTheme && localStyles.restoreCardLight]}>
+              <View style={localStyles.restoreIcon}>
+                <ScanSearch size={24} color="#38bdf8" />
+              </View>
+              <View style={localStyles.restoreTextBlock}>
+                <Text style={localStyles.actionTitle}>Manutencao das gravacoes</Text>
+                <Text style={localStyles.actionSubtitle}>
+                  Verifique arquivos, referencias ausentes e gravacoes antigas.
+                </Text>
+              </View>
+              <TouchableOpacity
+                style={[localStyles.restoreButton, busy && localStyles.actionDisabled]}
+                onPress={openRecordingMaintenance}
+                disabled={busy}
+              >
+                <Text style={localStyles.restoreButtonText}>Verificar gravacoes</Text>
+              </TouchableOpacity>
+            </View>
+
             <View style={[localStyles.actionCard, localStyles.actionCardGreen, isLightTheme && localStyles.actionCardGreenLight]}>
               <View style={localStyles.newBadge}>
                 <Text style={localStyles.newBadgeText}>NOVO</Text>
@@ -808,6 +1010,201 @@ export function BackupScreen({ styles }: BackupScreenProps) {
       ) : null}
 
       <AppModal
+        visible={maintenanceOpen}
+        title="Manutencao das gravacoes"
+        onClose={() => {
+          if (!maintenanceLoading) setMaintenanceOpen(false);
+        }}
+        icon={<ScanSearch size={16} color="var(--app-accent)" />}
+        showCloseButton={!maintenanceLoading}
+        footer={
+          <>
+            {!maintenanceLoading ? (
+              <TouchableOpacity
+                onPress={() => {
+                  if (cleanupConfirmOpen) setCleanupConfirmOpen(false);
+                  else setMaintenanceOpen(false);
+                }}
+              >
+                <Text style={localStyles.footerGhostText}>{cleanupConfirmOpen ? 'Cancelar' : 'Fechar'}</Text>
+              </TouchableOpacity>
+            ) : null}
+            {cleanupConfirmOpen && recordingAudit?.orphanFiles.length ? (
+              <TouchableOpacity
+                style={localStyles.footerPrimaryButton}
+                onPress={() => void runOrphanCleanup()}
+                disabled={maintenanceLoading}
+              >
+                <Text style={localStyles.footerPrimaryText}>Remover arquivos</Text>
+              </TouchableOpacity>
+            ) : null}
+          </>
+        }
+      >
+        <ScrollView style={localStyles.maintenanceScroll} contentContainerStyle={localStyles.maintenanceContent}>
+          {maintenanceLoading ? (
+            <View style={localStyles.loadingBox}>
+              <ActivityIndicator color="var(--app-accent)" />
+              <Text style={localStyles.mutedText}>
+                {cleanupConfirmOpen ? 'Removendo arquivos nao utilizados...' : 'Verificando gravacoes...'}
+              </Text>
+            </View>
+          ) : cleanupConfirmOpen && recordingAudit ? (
+            <>
+              <Text style={localStyles.modalIntro}>
+                Encontramos {recordingAudit.orphanFiles.length} arquivo{recordingAudit.orphanFiles.length === 1 ? '' : 's'} de audio que nao {recordingAudit.orphanFiles.length === 1 ? 'esta' : 'estao'} mais associado{recordingAudit.orphanFiles.length === 1 ? '' : 's'} a nenhuma musica. Deseja remover?
+              </Text>
+              <Text style={localStyles.migrationWarning}>
+                Gravacoes associadas a musicas nao serao removidas. As referencias serao verificadas novamente antes da limpeza.
+              </Text>
+            </>
+          ) : recordingAudit ? (
+            <>
+              <View style={localStyles.auditGrid}>
+                {[
+                  ['Gravacoes em arquivo', recordingAudit.songsWithFile],
+                  ['Arquivos fisicos', recordingAudit.physicalFiles],
+                  ['Base64 restantes', recordingAudit.legacyBase64.total],
+                  ['Arquivos nao utilizados', recordingAudit.orphanFiles.length],
+                  ['Referencias ausentes', recordingAudit.brokenReferences.length],
+                  ['Entradas ignoradas', recordingAudit.ignoredEntries.length],
+                ].map(([label, value]) => (
+                  <View key={String(label)} style={localStyles.auditItem}>
+                    <Text style={localStyles.auditValue}>{value}</Text>
+                    <Text style={localStyles.auditLabel}>{label}</Text>
+                  </View>
+                ))}
+              </View>
+
+              {recordingAudit.legacyBase64.total ? (
+                <View style={localStyles.migrationFailureBox}>
+                  <Text style={localStyles.optionTitle}>Gravacoes antigas</Text>
+                  <Text style={localStyles.optionSubtitle}>Migraveis: {recordingAudit.legacyBase64.migratable}</Text>
+                  <Text style={localStyles.optionSubtitle}>Sem tipo de arquivo: {recordingAudit.legacyBase64.missingMime}</Text>
+                  <Text style={localStyles.optionSubtitle}>Formato invalido: {recordingAudit.legacyBase64.invalid}</Text>
+                  <Text style={localStyles.optionSubtitle}>Arquivo + Base64: {recordingAudit.legacyBase64.withFile}</Text>
+                </View>
+              ) : null}
+
+              {recordingAudit.brokenReferences.length ? (
+                <View style={localStyles.migrationFailureBox}>
+                  <Text style={localStyles.migrationWarning}>Referencias que precisam de revisao:</Text>
+                  {recordingAudit.brokenReferences.slice(0, 5).map((item) => (
+                    <Text key={`${item.songId}-${item.path}`} style={localStyles.optionSubtitle} numberOfLines={2}>
+                      {item.title || 'Sem titulo'}{item.artist ? ` - ${item.artist}` : ''}: {item.reason === 'empty-file' ? 'arquivo vazio' : item.reason === 'invalid-path' ? 'caminho invalido' : 'arquivo nao encontrado'}
+                    </Text>
+                  ))}
+                </View>
+              ) : null}
+
+              {cleanupResult ? (
+                <Text style={localStyles.statusText}>
+                  Limpeza: {cleanupResult.removed} removido{cleanupResult.removed === 1 ? '' : 's'}, {cleanupResult.failed.length} falha{cleanupResult.failed.length === 1 ? '' : 's'}, {cleanupResult.skippedReferenced.length} preservado{cleanupResult.skippedReferenced.length === 1 ? '' : 's'} por nova referencia.
+                </Text>
+              ) : null}
+
+              {recordingAudit.orphanFiles.length ? (
+                <TouchableOpacity style={localStyles.auditCleanupButton} onPress={() => setCleanupConfirmOpen(true)}>
+                  <Text style={localStyles.auditCleanupButtonText}>
+                    Limpar {recordingAudit.orphanFiles.length} arquivo{recordingAudit.orphanFiles.length === 1 ? '' : 's'} nao utilizado{recordingAudit.orphanFiles.length === 1 ? '' : 's'}
+                  </Text>
+                </TouchableOpacity>
+              ) : (
+                <Text style={localStyles.optionSubtitle}>Nenhum arquivo nao utilizado foi encontrado.</Text>
+              )}
+            </>
+          ) : (
+            <Text style={localStyles.migrationWarning}>{maintenanceError || 'Nao foi possivel concluir a verificacao.'}</Text>
+          )}
+          {maintenanceError ? <Text style={localStyles.migrationWarning}>{maintenanceError}</Text> : null}
+        </ScrollView>
+      </AppModal>
+
+      <AppModal
+        visible={migrationOpen}
+        title="Converter gravacoes antigas"
+        onClose={() => {
+          if (!migrationLoading) setMigrationOpen(false);
+        }}
+        icon={<HardDrive size={16} color="var(--app-accent)" />}
+        showCloseButton={!migrationLoading}
+        footer={
+          <>
+            {!migrationLoading ? (
+              <TouchableOpacity onPress={() => setMigrationOpen(false)}>
+                <Text style={localStyles.footerGhostText}>Fechar</Text>
+              </TouchableOpacity>
+            ) : null}
+            {!migrationResult ? (
+              <TouchableOpacity
+                style={[localStyles.footerPrimaryButton, migrationLoading && localStyles.footerPrimaryButtonDisabled]}
+                onPress={() => void runRecordingMigration()}
+                disabled={migrationLoading}
+              >
+                {migrationLoading ? (
+                  <ActivityIndicator color="#000" />
+                ) : (
+                  <Text style={localStyles.footerPrimaryText}>Converter agora</Text>
+                )}
+              </TouchableOpacity>
+            ) : null}
+          </>
+        }
+      >
+        <View style={localStyles.migrationBody}>
+          {migrationLoading ? (
+            <>
+              <ActivityIndicator color="var(--app-accent)" />
+              <Text style={localStyles.actionTitle}>Convertendo gravacoes...</Text>
+              <Text style={localStyles.actionSubtitle}>
+                {migrationProgress?.done || 0} de {migrationProgress?.total || backupStats.legacyAudioRecordings}
+              </Text>
+              {migrationProgress?.title ? (
+                <Text style={localStyles.migrationCurrent} numberOfLines={1}>{migrationProgress.title}</Text>
+              ) : null}
+              <Text style={localStyles.migrationWarning}>Nao feche o app durante a conversao.</Text>
+            </>
+          ) : migrationResult ? (
+            <>
+              <Text style={localStyles.actionTitle}>
+                {migrationResult.stoppedReason ? 'Conversao interrompida' : 'Conversao concluida'}
+              </Text>
+              <Text style={localStyles.actionSubtitle}>
+                {migrationResult.migrated} convertida{migrationResult.migrated === 1 ? '' : 's'} de {migrationResult.total}.
+              </Text>
+              {migrationResult.failures.length ? (
+                <View style={localStyles.migrationFailureBox}>
+                  <Text style={localStyles.migrationWarning}>
+                    {migrationResult.failures.length} gravacao{migrationResult.failures.length === 1 ? '' : 'oes'} preservada{migrationResult.failures.length === 1 ? '' : 's'} sem conversao:
+                  </Text>
+                  {migrationResult.failures.slice(0, 5).map((failure) => (
+                    <Text key={failure.songId} style={localStyles.optionSubtitle} numberOfLines={2}>
+                      {failure.title}: {failure.reason}
+                    </Text>
+                  ))}
+                </View>
+              ) : null}
+              {migrationResult.stoppedReason ? (
+                <Text style={localStyles.migrationWarning}>{migrationResult.stoppedReason}</Text>
+              ) : null}
+            </>
+          ) : (
+            <>
+              <Text style={localStyles.modalIntro}>
+                As gravacoes antigas serao convertidas para arquivos, reduzindo o tamanho interno dos dados das musicas. O processo pode levar alguns segundos.
+              </Text>
+              <Text style={localStyles.migrationWarning}>
+                Recomendamos gerar antes um backup completo com gravacoes de audio. O backup nao e obrigatorio para continuar.
+              </Text>
+              <Text style={localStyles.actionSubtitle}>
+                Nao feche o app enquanto a conversao estiver em andamento.
+              </Text>
+            </>
+          )}
+        </View>
+      </AppModal>
+
+      <AppModal
         visible={customOpen}
         title="Backup personalizado"
         onClose={() => setCustomOpen(false)}
@@ -839,6 +1236,10 @@ export function BackupScreen({ styles }: BackupScreenProps) {
           <Text style={localStyles.modalIntro}>
             Monte um pacote sob medida combinando musicas, artistas, listas e pastas. O arquivo gerado restaura em modo mesclar.
           </Text>
+          {renderAudioRecordingOption(
+            includeCustomBackupAudio,
+            () => setIncludeCustomBackupAudio((current) => !current)
+          )}
           <View style={localStyles.tabRow}>
             {customTabs.map((tab) => (
               <TouchableOpacity
@@ -1216,6 +1617,115 @@ const localStyles = StyleSheet.create({
     color: '#ffffff',
     fontSize: 14,
     fontWeight: '900',
+  },
+  audioOption: {
+    minHeight: 68,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'var(--app-border-soft)',
+    backgroundColor: 'var(--app-surface-alt)',
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 9,
+  },
+  audioOptionText: {
+    flex: 1,
+    minWidth: 0,
+  },
+  audioOptionTitle: {
+    color: 'var(--app-text)',
+    fontSize: 12,
+    fontWeight: '900',
+  },
+  audioOptionSubtitle: {
+    color: 'var(--app-muted-text)',
+    fontSize: 10.5,
+    lineHeight: 15,
+    fontWeight: '700',
+    marginTop: 2,
+  },
+  audioOptionMeta: {
+    color: 'var(--app-accent)',
+    fontSize: 10,
+    fontWeight: '800',
+    marginTop: 3,
+  },
+  migrationBody: {
+    gap: 10,
+    alignItems: 'flex-start',
+  },
+  migrationCurrent: {
+    color: 'var(--app-text)',
+    fontSize: 12,
+    fontWeight: '800',
+    maxWidth: '100%',
+  },
+  migrationWarning: {
+    color: '#f59e0b',
+    fontSize: 11,
+    lineHeight: 16,
+    fontWeight: '800',
+  },
+  migrationFailureBox: {
+    width: '100%',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(245,158,11,0.24)',
+    backgroundColor: 'rgba(245,158,11,0.07)',
+    padding: 10,
+    gap: 5,
+  },
+  maintenanceScroll: {
+    maxHeight: 520,
+  },
+  maintenanceContent: {
+    gap: 12,
+  },
+  auditGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  auditItem: {
+    flexGrow: 1,
+    flexBasis: 130,
+    minHeight: 70,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'var(--app-border-soft)',
+    backgroundColor: 'var(--app-surface-alt)',
+    padding: 10,
+    justifyContent: 'center',
+  },
+  auditValue: {
+    color: 'var(--app-text)',
+    fontSize: 20,
+    fontWeight: '900',
+  },
+  auditLabel: {
+    color: 'var(--app-muted-text)',
+    fontSize: 10.5,
+    lineHeight: 14,
+    fontWeight: '800',
+    marginTop: 2,
+  },
+  auditCleanupButton: {
+    minHeight: 42,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(245,158,11,0.34)',
+    backgroundColor: 'rgba(245,158,11,0.11)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 12,
+  },
+  auditCleanupButtonText: {
+    color: '#f59e0b',
+    fontSize: 12,
+    fontWeight: '900',
+    textAlign: 'center',
   },
   secondaryGrid: {
     flexDirection: 'row',

@@ -4,6 +4,7 @@ import { normalizeFolderPlaylistDisplayMode } from '../utils/folderPlaylistDispl
 import { DEFAULT_GENRE_NAMES, getGenreDisplayName, getSongGenreKeys, normalizeGenreName, uniqueGenres } from '../utils/genres';
 import { appendSongItemIfNeeded, derivePlaylistItemsFromSongIds, getPlaylistSectionItemIds, normalizePlaylistItems, QUICK_PDF_IDS, removeSongFromPlaylistItems } from '../utils/playlistItems';
 import { recordDevStorageOperation } from '../utils/devPerformance';
+import { deleteSongRecordingFile } from './songRecordingFiles';
 
 export const STORAGE_KEYS = {
   songs: '@songs',
@@ -279,7 +280,12 @@ export const db = {
 
   async deleteSong(id: string): Promise<void> {
     const songs = await db.getSongs();
+    const deletedSong = songs.find((song) => song.id === id);
     await db.saveSongs(songs.filter((song) => song.id !== id));
+    if (deletedSong?.audioNoteFile) {
+      const deleted = await deleteSongRecordingFile(deletedSong.audioNoteFile);
+      if (!deleted) console.warn('[CifrasGo] Nao foi possivel remover a gravacao da musica excluida.');
+    }
 
     const playlists = await db.getPlaylists();
     await db.savePlaylists(
